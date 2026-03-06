@@ -1,0 +1,7 @@
+.env
+credentials.json
+gmail_credentials.json
+token.pickle
+processed_ids.json
+__pycache__/
+venv/
