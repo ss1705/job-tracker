@@ -40,6 +40,8 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
+load_dotenv()
+
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 app = FastAPI(lifespan=lifespan)
