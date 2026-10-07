@@ -69,6 +69,8 @@ def list_with_flags(conn) -> list[dict]:
     today, out = date.today(), []
     for r in rows:
         c = dict(r)
+        c["has_draft"] = bool(c.pop("draft_json", ""))
+        c.pop("profile_text", None)
         c["application_label"] = f"{c['app_company']} — {c['app_role'] or 'no role'}" if c["app_company"] else ""
         f = followups.contact_flags(c, today)
         c["follow_up_due"], c["follow_up_reason"] = f["due"], f["reason"]

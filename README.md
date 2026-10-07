@@ -62,6 +62,15 @@ application (linking one turns on that application's follow-up reminders). Remin
   Imports preview first and are idempotent. Only outreach you initiated is imported.
 - Extend the backfill range with a wide **Sync**; add `"reprocess_linkedin": true` to `POST /api/sync` to re-read seen notices.
 
+### Drafting outreach (Outreach tab)
+
+Upload your resume once (PDF / DOCX / TXT; stored in `data/`, gitignored). Then paste someone's LinkedIn link and their
+profile text (select-all on their profile and copy; even a headline works). It checks for a shared USC background in code,
+drafts a ≤200-character connection note and a follow-up message tying your resume to their work, shows the evidence for each
+personal detail, and runs a second fact-check pass that flags anything the sources don't support. It never reads LinkedIn and
+never sends anything: you copy the text, send it on LinkedIn, and press **I sent it**, which logs the outreach (stage, date,
+channel, the text you sent) in Contacts. Set `OUTREACH_GOAL` in `.env` to change what you ask people for.
+
 ## Daily digest
 
 A short email to yourself each morning (at `DIGEST_HOUR`, default 8) listing new responses, people and applications to

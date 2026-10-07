@@ -112,6 +112,20 @@
   .rel { margin-left: 6px; font-size: 11px; font-weight: 600; color: var(--accent); }
   pre.preview { margin: 12px 0 0; padding: 12px 14px; background: var(--surface-2); border-radius: 10px; white-space: pre-wrap; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
   code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); padding: 2px 6px; border-radius: 6px; user-select: all; }
+  .field-block { display: block; margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .field-block input, .field-block textarea { width: 100%; margin-top: 4px; color: var(--text); }
+  .draft-box { position: relative; }
+  .draft-box textarea { min-height: 130px; line-height: 1.55; font-size: 14px; color: var(--text); }
+  .counter { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .counter.over { color: var(--Rejected); font-weight: 600; }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; }
+  .pill.yes { background: color-mix(in srgb, var(--Offer) 18%, transparent); color: var(--Offer); }
+  .pill.maybe { background: var(--warn-bg); color: var(--warn); }
+  .pill.no { background: var(--surface-2); color: var(--muted); }
+  ul.hooks { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+  ul.hooks li { margin: 4px 0; } ul.hooks q { color: var(--muted); }
+  label.btn { display: inline-block; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 7px 14px; cursor: pointer; }
+  label.btn:hover { border-color: var(--muted); }
   .dash { color: var(--muted); opacity: .6; }
   .type-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
 
@@ -175,6 +189,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab" role="tab" data-tab="apps" aria-selected="true">Applications <span class="count" id="tabAppsCount"></span></button>
     <button class="tab" role="tab" data-tab="contacts" aria-selected="false">Contacts <span class="count" id="tabContactsCount"></span></button>
+    <button class="tab" role="tab" data-tab="outreach" aria-selected="false">Outreach</button>
   </nav>
 
   <div id="appsView">
@@ -225,6 +240,31 @@
       </table>
       <div class="empty muted" id="cEmpty" hidden>No contacts yet. Add the people you’ve had coffee chats with, referrals and recruiters, and get reminded to follow up.</div>
     </div>
+  </div>
+
+  <div id="outreachView" hidden>
+    <section class="card">
+      <div class="row">
+        <strong>Your resume</strong><span id="resumeStatus" class="muted" style="font-size:13px"></span><span style="flex:1"></span>
+        <label class="btn">Upload / replace<input type="file" id="resumeFile" accept=".pdf,.docx,.txt,.md" hidden></label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Stored only on this Mac (in data/, never in git). Its text is sent to Groq with each draft, like your emails are for parsing.</div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2 style="margin:0 0 2px;font-size:16px">Draft a message</h2>
+      <div class="muted" style="font-size:13px">Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and uses USC when you share it. You review, copy and send it on LinkedIn yourself.</div>
+      <label class="field-block">LinkedIn profile link<input id="oUrl" placeholder="https://www.linkedin.com/in/…"></label>
+      <label class="field-block">Their profile text <span style="opacity:.7">(open their profile, select all, copy, paste here; even just the headline helps)</span>
+        <textarea id="oProfile" rows="7" placeholder="Name, headline, About, Experience, Education…"></textarea></label>
+      <div class="row" style="margin-top:12px">
+        <label class="field">Same school?<select id="oUsc"><option value="">Auto-detect USC</option><option value="yes">Yes, they’re a USC alum</option><option value="no">No, don’t mention USC</option></select></label>
+        <button class="primary" id="oDraft" style="align-self:flex-end">Draft</button>
+        <span id="oMsg" class="muted" style="align-self:center"></span>
+      </div>
+    </section>
+
+    <section id="oResult" class="card" style="margin-top:16px" hidden></section>
   </div>
 
   <section class="card" id="digestCard" style="margin-top:20px">
@@ -606,7 +646,7 @@ function renderContacts() {
   $("#cEmpty").hidden = contacts.length > 0;
   $("#cRows").innerHTML = list.map(c => `
     <tr class="app ${c.id === openCid ? "open" : ""}" data-cid="${c.id}">
-      <td class="company">${esc(c.name)}${c.needs_triage ? '<span class="badge warn">to sort</span>' : ""}${c.link ? `<a class="ext" href="${esc(c.link)}" target="_blank" rel="noopener" title="Open profile">↗</a>` : ""}${c.follow_up_due ? `<span class="badge due" title="${esc(c.follow_up_reason)}">follow up</span>` : ""}${c.title ? `<small>${esc(c.title)}</small>` : ""}</td>
+      <td class="company">${esc(c.name)}${c.needs_triage ? '<span class="badge warn">to sort</span>' : ""}${c.has_draft ? '<span class="badge contact" title="A drafted message is saved">draft</span>' : ""}${c.link ? `<a class="ext" href="${esc(c.link)}" target="_blank" rel="noopener" title="Open profile">↗</a>` : ""}${c.follow_up_due ? `<span class="badge due" title="${esc(c.follow_up_reason)}">follow up</span>` : ""}${c.title ? `<small>${esc(c.title)}</small>` : ""}</td>
       <td>${esc(c.company) || DASH}${c.application_label ? `<small class="muted" style="display:block;font-size:12px" title="Related application">↳ ${esc(c.application_label)}</small>` : ""}</td>
       <td>${c.needs_triage
         ? `<select class="kind-pick" data-cid="${c.id}" aria-label="Keep as"><option value="">Keep as…</option>${KINDS.map(k => `<option>${k}</option>`).join("")}</select>`
@@ -639,7 +679,7 @@ function contactDetail(c) {
     </div>
     ${c.follow_up_due ? `<div class="sync-note" style="margin-top:10px"><b>${esc(c.follow_up_reason)}.</b></div>` : ""}
     <div class="actions" data-cid="${c.id}">
-      <button data-cact="followed">Followed up</button><button data-cact="snooze">Snooze 1 week</button>
+      <button data-cact="draft">Draft message</button><button data-cact="followed">Followed up</button><button data-cact="snooze">Snooze 1 week</button>
       <span class="spacer"></span><button class="danger" data-cact="delete">Delete</button></div>
   </div></div>`;
 }
@@ -677,6 +717,7 @@ $("#cRows").addEventListener("change", async e => {
 $("#cRows").addEventListener("click", async e => {
   const b = e.target.closest("[data-cact]"); if (!b) return;
   const id = +b.closest("[data-cid]").dataset.cid;
+  if (b.dataset.cact === "draft") { await openOutreachFor(id); return; }
   if (b.dataset.cact === "ignore") {
     if (!confirm("Ignore this person? They’ll be removed and won’t be added from LinkedIn again.")) return;
     await api(`/api/contacts/${id}/ignore`, { method: "POST" }); openCid = null; await loadContacts(); await load(); return;
@@ -741,17 +782,107 @@ $("#impApply").onclick = async () => {
   } catch (err) { out.className = "err"; out.textContent = err.message; }
 };
 
+// ---------------------------------------------------------------- outreach drafting
+let oContactId = null, oDraft = null;
+const NOTE_MAX = 200;
+
+async function loadResume() {
+  const r = await api("/api/resume").catch(() => null), el = $("#resumeStatus");
+  if (!r) return;
+  el.textContent = r.present ? `${r.filename || "resume"} · ${r.words} words` : "No resume yet. Upload one to enable drafting.";
+  el.className = r.present ? "muted" : "err";
+}
+$("#resumeFile").addEventListener("change", async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const buf = new Uint8Array(await f.arrayBuffer()); let bin = ""; buf.forEach(b => bin += String.fromCharCode(b));
+  $("#resumeStatus").className = "muted"; $("#resumeStatus").textContent = "Reading…";
+  try { await api("/api/resume", { method: "POST", body: JSON.stringify({ filename: f.name, data: btoa(bin) }) }); }
+  catch (err) { $("#resumeStatus").className = "err"; $("#resumeStatus").textContent = err.message; return; }
+  e.target.value = ""; loadResume();
+});
+
+function counter(el, max) {
+  const out = el.parentElement.querySelector(".counter");
+  out.textContent = max ? `${el.value.length}/${max}` : `${el.value.length} chars`;
+  out.classList.toggle("over", !!max && el.value.length > max);
+}
+
+function renderDraft(r) {
+  oContactId = r.contact.id; oDraft = r.draft;
+  const d = r.draft, u = d.usc, label = { yes: "USC alum", maybe: "Maybe USC", no: "Not USC" }[u.used] || "";
+  const box = $("#oResult");
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="row"><h2 style="margin:0;font-size:16px">${esc(r.contact.name)}</h2>
+      <span class="muted">${esc([r.contact.title, r.contact.company].filter(Boolean).join(" · "))}</span>
+      <span class="pill ${u.used}" title="${esc((u.evidence || []).join("; "))}">${label}</span>
+      <span style="flex:1"></span>
+      ${r.contact.link ? `<a href="${esc(r.contact.link)}" target="_blank" rel="noopener">Open profile ↗</a>` : ""}</div>
+    ${u.evidence && u.evidence.length ? `<div class="muted" style="font-size:12px;margin-top:4px">USC check: ${esc(u.evidence.join("; "))}</div>` : ""}
+    ${d.warnings.length ? `<ul class="hooks" style="color:var(--warn)">${d.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+    <div class="draft-box" style="margin-top:14px"><h4 style="margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Connection note</h4>
+      <textarea id="oNote" style="width:100%;min-height:90px">${esc(d.note)}</textarea>
+      <div class="row" style="margin-top:6px"><span class="counter"></span><span style="flex:1"></span>
+        <button data-o="copy-note">Copy</button><button data-o="sent-note" title="Log this outreach in Contacts as Reached out">I sent it</button></div></div>
+    <div class="draft-box" style="margin-top:14px"><h4 style="margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Message after they accept</h4>
+      <textarea id="oMessage" style="width:100%">${esc(d.message)}</textarea>
+      <div class="row" style="margin-top:6px"><span class="counter"></span><span style="flex:1"></span>
+        <button data-o="copy-message">Copy</button><button data-o="sent-message" title="Log this outreach in Contacts as Reached out">I sent it</button></div></div>
+    ${d.hooks.length ? `<h4 style="margin:16px 0 0;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">What it’s based on (check these)</h4>
+      <ul class="hooks">${d.hooks.map(h => `<li>${esc(h.claim)} <span class="muted">[${esc(h.source)}]</span> ${h.quote ? `<q>${esc(h.quote)}</q>` : ""}</li>`).join("")}</ul>` : ""}
+    <div class="row" style="margin-top:14px"><button data-o="regen">Regenerate</button><span id="oSentMsg" class="muted"></span></div>`;
+  counter($("#oNote"), NOTE_MAX); counter($("#oMessage"), 0);
+  $("#oNote").oninput = () => counter($("#oNote"), NOTE_MAX); $("#oMessage").oninput = () => counter($("#oMessage"), 0);
+}
+
+async function runDraft(extra = {}) {
+  const btn = $("#oDraft"), msg = $("#oMsg"); btn.disabled = true; msg.className = "muted"; msg.textContent = "Drafting… (about 10 seconds)";
+  try {
+    const body = { url: $("#oUrl").value.trim(), profile_text: $("#oProfile").value, usc_override: $("#oUsc").value || null, contact_id: oContactId, ...extra };
+    const r = await api("/api/outreach/draft", { method: "POST", body: JSON.stringify(body) });
+    renderDraft(r); msg.textContent = "";
+    loadContacts(); load();
+  } catch (err) { msg.className = "err"; msg.textContent = err.message; }
+  btn.disabled = false;
+}
+$("#oDraft").onclick = () => { oContactId = null; runDraft(); };
+
+$("#oResult").addEventListener("click", async e => {
+  const b = e.target.closest("[data-o]"); if (!b) return;
+  const act = b.dataset.o, sent = $("#oSentMsg");
+  if (act === "regen") { await runDraft({ contact_id: oContactId }); return; }
+  if (act.startsWith("copy-")) {
+    const ta = $(act === "copy-note" ? "#oNote" : "#oMessage");
+    try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); document.execCommand("copy"); }
+    const old = b.textContent; b.textContent = "Copied ✓"; setTimeout(() => b.textContent = old, 1500); return;
+  }
+  if (act.startsWith("sent-")) {
+    const which = act.slice(5), text = $(which === "note" ? "#oNote" : "#oMessage").value;
+    await api(`/api/contacts/${oContactId}/mark-sent`, { method: "POST", body: JSON.stringify({ which, text }) });
+    sent.className = ""; sent.textContent = "Logged in Contacts as Reached out (today).";
+    await loadContacts(); await load();
+  }
+});
+
+async function openOutreachFor(id) {
+  const r = await api(`/api/outreach/contact/${id}`);
+  oContactId = id; $("#oUrl").value = r.contact.link || ""; $("#oProfile").value = r.profile_text || ""; $("#oResult").hidden = true;
+  setTab("outreach");
+  if (r.draft) renderDraft({ contact: r.contact, draft: r.draft });
+}
+loadResume();
+
 // tabs
 function setTab(tab) {
-  const contactsTab = tab === "contacts";
-  $("#appsView").hidden = contactsTab; $("#contactsView").hidden = !contactsTab;
-  $("#addBtn").hidden = contactsTab; $("#addContactBtn").hidden = !contactsTab; $("#importBtn").hidden = !contactsTab;
+  $("#appsView").hidden = tab !== "apps"; $("#contactsView").hidden = tab !== "contacts"; $("#outreachView").hidden = tab !== "outreach";
+  $("#addBtn").hidden = tab !== "apps"; $("#addContactBtn").hidden = tab !== "contacts"; $("#importBtn").hidden = tab !== "contacts";
   document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
   store.set("tab", tab);
 }
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
 setTab(new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps");
 if (new URLSearchParams(location.hash.slice(1)).get("import")) $("#importBtn").click();
+if (new URLSearchParams(location.hash.slice(1)).get("odraft")) openOutreachFor(+new URLSearchParams(location.hash.slice(1)).get("odraft"));
 
 // ---------------------------------------------------------------- daily digest
 async function loadDigest() {

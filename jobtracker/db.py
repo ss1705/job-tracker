@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS contacts (
     response_kind TEXT NOT NULL DEFAULT '',   -- 'Accepted invite' / 'Replied'
     response_logged_at TEXT,                  -- when the tracker noticed (drives the digest)
     needs_triage INTEGER NOT NULL DEFAULT 0,  -- auto-added from LinkedIn: the user hasn't sorted it yet (no reminders until kept)
+    profile_text TEXT NOT NULL DEFAULT '',    -- what you pasted from their profile (kept locally, for regenerating drafts)
+    draft_json TEXT NOT NULL DEFAULT '',      -- last outreach draft (note, message, evidence, USC check)
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -123,7 +125,8 @@ def init_db():
         have_c = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
         added_c = {"channel": "TEXT NOT NULL DEFAULT ''", "source": "TEXT NOT NULL DEFAULT 'manual'", "ext_key": "TEXT NOT NULL DEFAULT ''",
                    "outreach_sent_at": "TEXT", "responded_at": "TEXT", "response_kind": "TEXT NOT NULL DEFAULT ''",
-                   "response_logged_at": "TEXT", "needs_triage": "INTEGER NOT NULL DEFAULT 0"}
+                   "response_logged_at": "TEXT", "needs_triage": "INTEGER NOT NULL DEFAULT 0",
+                   "profile_text": "TEXT NOT NULL DEFAULT ''", "draft_json": "TEXT NOT NULL DEFAULT ''"}
         for col, ddl in added_c.items():
             if col not in have_c:
                 conn.execute(f"ALTER TABLE contacts ADD COLUMN {col} {ddl}")

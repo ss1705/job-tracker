@@ -33,3 +33,8 @@ CONTACT_STAGES = ["To reach out", "Reached out", "Replied", "Chat scheduled", "C
 DIGEST_ENABLED = os.getenv("DIGEST_ENABLED", "1") not in ("0", "false", "False", "")
 DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "8"))                      # local time; sent on the first check after this hour
 DIGEST_SEND_EMPTY = os.getenv("DIGEST_SEND_EMPTY", "0") in ("1", "true", "True")
+
+# outreach drafting: what you're asking for, in your own words (used in every draft)
+OUTREACH_GOAL = os.getenv("OUTREACH_GOAL", "I'm looking for new grad / co-op software and ML roles and would value a short conversation or advice. "
+                          "I am not asking for a referral up front.")
+DATA_DIR = DB_PATH.parent

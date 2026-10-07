@@ -303,60 +303,18 @@ Rules:
 
 Return ONLY JSON: {{"is_job_related": bool, "company": str, "role": str, "status": "Applied|OA|Interview|Rejected|Offer|None"}}"""
 
-_client = None
-_exhausted: set[str] = set()   # models whose daily token quota is gone (for this process)
-
-
-class LLMExhausted(Exception):
-    """Every configured Groq model has hit its daily token limit."""
+from . import llm                      # noqa: E402  (shared Groq helper)
+from .llm import LLMExhausted          # noqa: E402,F401  (re-exported: sync.py imports it from here)
 
 
 def llm_available() -> bool:
-    return bool(config.GROQ_API_KEY)
-
-
-def _retry_after_seconds(msg: str) -> float:
-    m = re.search(r"try again in (?:(\d+)m)?\s*([\d.]+)s", msg)
-    return (int(m.group(1) or 0) * 60 + float(m.group(2))) if m else 30.0
+    return llm.available()
 
 
 def llm_parse(subject: str, sender: str, body: str) -> dict | None:
-    """Returns the parsed dict, None on a non-quota failure (caller falls back to rules),
-    and raises LLMExhausted when no model has daily quota left."""
-    global _client
-    if not llm_available():
-        return None
-    from groq import Groq, RateLimitError
-    _client = _client or Groq(api_key=config.GROQ_API_KEY)
-    prompt = _PROMPT.format(subject=subject, sender=sender, body=clean_body(body, 2200))
-    models = [m for m in [config.GROQ_MODEL, *config.GROQ_FALLBACK_MODELS] if m not in _exhausted]
-    if not models:
-        raise LLMExhausted("Groq daily token limit reached on all configured models; progress is saved, resume later.")
-    for model in models:
-        kwargs = {"reasoning_effort": "low"} if model.startswith("openai/gpt-oss") else {}
-        for attempt in range(2):
-            try:
-                resp = _client.chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}, temperature=0, **kwargs)
-                return json.loads(resp.choices[0].message.content)
-            except RateLimitError as e:
-                msg = str(e)
-                if "per day" in msg or "TPD" in msg:
-                    print(f"[parser] {model}: daily token limit reached, trying next model")
-                    _exhausted.add(model)
-                    break
-                wait = _retry_after_seconds(msg)           # per-minute limit: wait it out once
-                if attempt == 0 and wait <= 90:
-                    time.sleep(wait + 1)
-                    continue
-                break
-            except Exception as e:                           # bad JSON, network, model unavailable
-                print(f"[parser] LLM call failed on {model}: {e}")
-                break
-    if all(m in _exhausted for m in [config.GROQ_MODEL, *config.GROQ_FALLBACK_MODELS]):
-        raise LLMExhausted("Groq daily token limit reached on all configured models; progress is saved, resume later.")
-    return None
+    """Parsed email fields, None on a non-quota failure (caller falls back to rules); raises LLMExhausted
+    when no model has daily quota left."""
+    return llm.chat_json(_PROMPT.format(subject=subject, sender=sender, body=clean_body(body, 2200)), label="parser")
 
 
 # ---------------------------------------------------------------- public entry point

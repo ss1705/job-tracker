@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, contacts, db, digest, followups, gmail, importers, parser, scheduler, sync
+from . import config, contacts, db, digest, drafts_api, followups, gmail, importers, parser, scheduler, sync
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -26,6 +26,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Job Tracker", lifespan=lifespan)
 app.include_router(contacts.router)
+app.include_router(drafts_api.router)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
