@@ -10,6 +10,7 @@ import time
 from . import config
 
 _client = None
+last_model: str = ""            # model that answered the most recent call
 _exhausted: set[str] = set()      # models whose daily token quota is gone (for this process)
 
 
@@ -26,10 +27,10 @@ def _retry_after_seconds(msg: str) -> float:
     return (int(m.group(1) or 0) * 60 + float(m.group(2))) if m else 30.0
 
 
-def chat_json(prompt: str, *, temperature: float = 0.0, effort: str = "low", label: str = "llm") -> dict | None:
+def chat_json(prompt: str, *, temperature: float = 0.0, effort: str = "low", label: str = "llm", max_tokens: int | None = None) -> dict | None:
     """Returns the parsed JSON object, None on a non-quota failure, and raises LLMExhausted when no model has
     daily quota left."""
-    global _client
+    global _client, last_model
     if not available():
         return None
     from groq import Groq, RateLimitError
@@ -40,11 +41,14 @@ def chat_json(prompt: str, *, temperature: float = 0.0, effort: str = "low", lab
         raise LLMExhausted("Groq daily token limit reached on all configured models; progress is saved, resume later.")
     for model in models:
         kwargs = {"reasoning_effort": effort} if model.startswith("openai/gpt-oss") else {}
+        if max_tokens:
+            kwargs["max_completion_tokens"] = max_tokens        # reasoning models can otherwise spend the default budget and return nothing
         for attempt in range(2):
             try:
                 resp = _client.chat.completions.create(
                     model=model, messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"}, temperature=temperature, **kwargs)
+                last_model = model
                 return json.loads(resp.choices[0].message.content)
             except RateLimitError as e:
                 msg = str(e)

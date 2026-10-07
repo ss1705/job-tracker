@@ -784,7 +784,7 @@ $("#impApply").onclick = async () => {
 
 // ---------------------------------------------------------------- outreach drafting
 let oContactId = null, oDraft = null;
-const NOTE_MAX = 200;
+let NOTE_MAX = 200;
 
 async function loadResume() {
   const r = await api("/api/resume").catch(() => null), el = $("#resumeStatus");
@@ -808,7 +808,7 @@ function counter(el, max) {
 }
 
 function renderDraft(r) {
-  oContactId = r.contact.id; oDraft = r.draft;
+  oContactId = r.contact.id; oDraft = r.draft; NOTE_MAX = (r.draft.limits && r.draft.limits.note_max) || 200;
   const d = r.draft, u = d.usc, label = { yes: "USC alum", maybe: "Maybe USC", no: "Not USC" }[u.used] || "";
   const box = $("#oResult");
   box.hidden = false;

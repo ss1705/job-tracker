@@ -9,8 +9,11 @@ import re
 
 from . import config, llm, outreach, resume
 
-NOTE_MAX = 200          # LinkedIn caps invitation notes at 200 characters on free accounts (300 on Premium)
 MESSAGE_MAX = 1400
+
+def note_max() -> int:
+    return config.LINKEDIN_NOTE_MAX
+
 
 # ---------------------------------------------------------------- USC check (code, not the model)
 
@@ -54,7 +57,7 @@ def clean_profile_url(url: str) -> tuple[str, str]:
 
 # ---------------------------------------------------------------- the drafting prompt
 
-_PROMPT = """You help a student/job seeker write short, genuine LinkedIn outreach to someone whose work interests them.
+_PROMPT = """You help a student/job seeker write LinkedIn outreach that reads like a thoughtful person wrote it, not a template.
 
 SENDER_RESUME (the only source of facts about the sender):
 {resume}
@@ -69,20 +72,38 @@ Details pasted by the sender:
 
 USC CHECK (computed by code, authoritative): {usc_line}
 
-RULES
+FACT RULES
 - Use ONLY facts present above. Never invent employers, projects, papers, mutual connections, events or shared experiences.
-- If the recipient details are thin, stay general and add a warning asking the sender to paste more of their profile.
-- Pick ONE or TWO specific hooks that connect the sender's real background to the recipient's real work. Each hook needs
-  a short quote from the source text as evidence.
-- If the USC check says yes, mention the shared USC / Trojan connection naturally in both messages. If maybe or no, do not claim it.
-- Ask for something small (a short chat or a bit of advice). Do not ask for a referral or a job.
 - Never state or imply the sender's availability, schedule, location, visa status or any commitment that is not in the resume.
-  Do not propose specific times; just offer to work around their schedule.
-- Respect tense: a degree or job marked expected, in progress or present is NOT finished (say "pursuing", "currently", "graduating in 2027").
+  Do not propose specific times; offering to work around their schedule is fine.
+- Respect tense: a degree or job marked expected, in progress or present is NOT finished ("pursuing", "currently", "graduating in 2027").
 - Copy numbers, titles and names exactly as written in the sources; never round, upgrade or paraphrase them.
-- Warm, direct, specific. First person. No emojis, no flattery clichés, no "I hope this finds you well", no buzzwords.
-- "note": a LinkedIn connection note, at most {note_max} characters INCLUDING spaces. Greet by first name.
-- "message": a follow-up to send once they accept, 4 to 6 sentences, at most {message_max} characters, signed with the sender's first name.
+- Show interest as QUESTIONS, never as claims. Do not write that the sender is "exploring", "working on", "interested in" or "focused on"
+  anything unless the resume or SENDER_GOAL says so, and do not attribute focus areas, publications or opinions to the recipient
+  beyond their own text. A fact about the sender must be traceable to a specific line of the resume.
+- If the recipient details are thin, stay general and add a warning asking the sender to paste more of their profile.
+- If the USC check says yes, mention the shared USC / Trojan connection naturally in both messages. If maybe or no, do not claim it.
+
+WHAT MAKES IT GOOD
+- SPECIFIC beats polite. Name ONE concrete detail from the recipient's own text (a named project, system, paper, talk, product,
+  or the particular problem they work on), not just their employer or job title. Connect it to ONE concrete thing the sender
+  actually built or studied (a named project, technique or result from the resume).
+- A small, easy-to-answer ask (one question, or a 15-minute chat). Never ask for a referral or a job.
+- Warm, direct, first person, like a person. No emojis, no flattery clichés, no buzzwords.
+- BANNED phrases: "quick chat about your work at", "pick your brain", "would love to connect", "I hope this finds you well",
+  "I came across your profile", "reaching out because", "passionate about", "I'd be honored".
+
+"note" (connection note): between {note_min} and {note_max} characters INCLUDING spaces. Use nearly the whole allowance (aim for about
+{note_target}); a note much shorter than {note_min} wastes space that could carry the specific detail. Shape: greeting by first name;
+USC tie if confirmed; their specific detail; the sender's connecting detail; the small ask.
+"message" (sent after they accept): {message_min} to {message_max} characters, 5 to 7 sentences, signed with the sender's first name.
+Shape: one sentence on who the sender is (school, program, expected graduation, focus); a specific paragraph linking a concrete
+project/experience of the sender to a concrete piece of their work, using details from BOTH sources; what the sender is looking for
+(from SENDER_GOAL, briefly); one specific question that is easy to answer; thanks.
+
+STYLE REFERENCE ONLY (fictional people; never reuse their facts or wording):
+note (about 190 chars): "Hi Priya, fellow Trojan here. Your last-mile routing work at Zeta (the cost-per-stop model) caught my eye; I built a demand-forecasting pipeline during my internship. Could I ask you two questions?"
+message opening: "Hi Priya, I'm Sam, an M.S. student at USC graduating in 2027 and focused on applied ML for logistics. ..."
 
 Return ONLY this JSON:
 {{"recipient": {{"name": "...", "role": "...", "company": "...", "education": ["..."]}},
@@ -95,8 +116,9 @@ recipient with the two SOURCES. A claim is unsupported if the sources don't stat
 (e.g. "leads" when the source says "builds", "under 50 ms" when the source says "50 ms p95", "earned a degree" when it is
 marked expected, any invented availability, event, mutual connection or number).
 
-SENDER SOURCE (resume):
+SENDER SOURCE (resume, plus the sender's own statement of what they are looking for):
 {resume}
+Sender's stated goal: {goal}
 
 RECIPIENT SOURCE (their profile text):
 {profile}
@@ -110,15 +132,54 @@ Return an empty list if everything is supported. Ignore greetings, the request i
 location, visa status or plans, and any claim about the recipient that is stronger than their profile text."""
 
 
-def verify(resume_text: str, profile: str, note: str, message: str) -> list[str]:
-    """Second-pass check: warnings for claims the sources don't support. Failure here never blocks a draft."""
+def verify_issues(resume_text: str, profile: str, note: str, message: str, goal: str = "") -> list[dict]:
+    """Second-pass check: claims the sources don't support. Failure here never blocks a draft."""
     try:
-        out = llm.chat_json(_VERIFY_PROMPT.format(resume=resume_text[:7000], profile=(profile or "(only a name was given)")[:5000],
-                                                  note=note, message=message), temperature=0, effort="low", label="verify")
+        out = llm.chat_json(_VERIFY_PROMPT.format(resume=resume_text[:5000], goal=goal or config.OUTREACH_GOAL,
+                                                  profile=(profile or "(only a name was given)")[:3800], note=note, message=message),
+                            temperature=0, effort="low", label="verify", max_tokens=2000)
     except llm.LLMExhausted:
         return []
     items = (out or {}).get("unsupported") or []
-    return [f"Check: “{str(i.get('claim', ''))[:140]}” — {str(i.get('issue', ''))[:160]}" for i in items if isinstance(i, dict) and i.get("claim")][:5]
+    return [i for i in items if isinstance(i, dict) and i.get("claim")][:5]
+
+
+def _format_issues(items: list[dict]) -> list[str]:
+    return [f"Check: “{str(i.get('claim', ''))[:140]}” — {str(i.get('issue', ''))[:160]}" for i in items]
+
+
+def verify(resume_text: str, profile: str, note: str, message: str, goal: str = "") -> list[str]:
+    return _format_issues(verify_issues(resume_text, profile, note, message, goal))
+
+
+_REPAIR_PROMPT = """Fix this LinkedIn outreach draft. A fact-checker found claims that the sources do not support. Remove or rewrite ONLY those
+claims: replace each with a supported fact from the sources or with a question. Keep everything else (tone, structure, the specific
+supported details, the ask). The note must stay at most {note_max} characters and the message at most {message_max}.
+
+SENDER SOURCE (resume): {resume}
+Sender's stated goal: {goal}
+RECIPIENT SOURCE (their profile text): {profile}
+
+UNSUPPORTED CLAIMS TO FIX:
+{issues}
+
+CURRENT DRAFT
+Note: {note}
+Message: {message}
+
+Return ONLY JSON: {{"note": "...", "message": "..."}}"""
+
+
+def repair(resume_text: str, profile: str, note: str, message: str, issues: list[dict], goal: str) -> tuple[str, str] | None:
+    try:
+        out = llm.chat_json(_REPAIR_PROMPT.format(
+            note_max=note_max() - 5, message_max=MESSAGE_MAX, resume=resume_text[:5000], goal=goal, profile=(profile or "")[:3800],
+            issues="\n".join(f"- “{i.get('claim')}”: {i.get('issue')}" for i in issues), note=note, message=message),
+            temperature=0.3, effort="low", label="repair", max_tokens=4000)
+    except llm.LLMExhausted:
+        return None
+    n, m = _tidy(str((out or {}).get("note") or "")), _tidy(str((out or {}).get("message") or ""))
+    return (n, m) if n and m else None          # length is fitted afterwards
 
 
 def _tidy(text: str) -> str:
@@ -126,6 +187,34 @@ def _tidy(text: str) -> str:
     for bad, good in (("\u2011", "-"), ("\u2010", "-"), ("\u2012", "-"), ("\u00a0", " "), ("\u202f", " "), ("\u200b", "")):
         text = text.replace(bad, good)
     return text.strip()
+
+
+_SHORTEN_PROMPT = """Rewrite the LinkedIn {field} below so it is AT MOST {limit} characters including spaces (it is {n} now).
+Remove filler words first. Keep the greeting, any shared-USC mention, the specific details about the recipient's work and the
+sender's project, and the ask. Do not add new facts. Return ONLY JSON: {{"text": "..."}}
+
+{field}: {text}"""
+
+
+def fit(text: str, field: str, limit: int) -> str | None:
+    """Ask for a shorter rewrite (cheap, targeted); None if it can't be made to fit. Models can't count characters by feel,
+    so each retry says exactly how far over the previous attempt was."""
+    for attempt in range(3):
+        over = len(text) - (limit - 5)
+        prompt = _SHORTEN_PROMPT.format(field=field, limit=limit - 5, n=len(text), text=text)
+        if attempt:
+            prompt += f"\n\nYour last version was still {over} characters too long. Cut at least {over + 15} more characters."
+        if attempt == 2:
+            prompt += " Keep ONLY: the greeting, the shared-USC mention if any, one specific detail of theirs, one of the sender's, and the ask."
+        try:
+            out = llm.chat_json(prompt, temperature=0.3, effort="low", label="shorten", max_tokens=2000)
+        except llm.LLMExhausted:
+            return None
+        t = _tidy(str((out or {}).get("text") or ""))
+        if t and len(t) <= limit:
+            return t
+        text = t or text
+    return None
 
 
 def _usc_line(usc: dict, override: str | None) -> str:
@@ -137,9 +226,11 @@ def _usc_line(usc: dict, override: str | None) -> str:
 
 def build_prompt(resume_text: str, name: str, profile: str, usc: dict, override: str | None, goal: str, first_name: str,
                  feedback: str = "") -> str:
-    p = _PROMPT.format(resume=resume_text[:7000], goal=goal, first_name=first_name or "(sign with the name on the resume)",
-                       name=name or "(unknown; infer from the details)", profile=(profile or "(nothing pasted)")[:5000],
-                       usc_line=_usc_line(usc, override), note_max=NOTE_MAX - 10, message_max=MESSAGE_MAX)
+    limit = note_max()
+    p = _PROMPT.format(resume=resume_text[:5000], goal=goal, first_name=first_name or "(sign with the name on the resume)",
+                       name=name or "(unknown; infer from the details)", profile=(profile or "(nothing pasted)")[:3800],
+                       usc_line=_usc_line(usc, override), note_max=limit - 5, note_min=round(limit * 0.82), note_target=round(limit * 0.93),
+                       message_min=650, message_max=MESSAGE_MAX - 400)
     return p + (f"\n\nFIX THIS FROM THE LAST ATTEMPT: {feedback}" if feedback else "")
 
 
@@ -152,34 +243,47 @@ def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | No
         raise ValueError("Drafting needs GROQ_API_KEY in .env.")
     usc = detect_usc(f"{name}\n{profile_text}")
     goal = goal or config.OUTREACH_GOAL
-    feedback, out = "", None
+    feedback, out, held, limit = "", None, None, note_max()
     for attempt in range(2):
         out = llm.chat_json(build_prompt(resume_text, name, profile_text, usc, usc_override, goal, resume.first_name(), feedback),
-                            temperature=0.5, effort="medium", label="drafting")
+                            temperature=0.6, effort="low", label="drafting", max_tokens=6000)
         if not out or not out.get("note") or not out.get("message"):
-            out = None
-            feedback = "Return the complete JSON with non-empty note and message."
+            out, feedback = None, "Return the complete JSON with non-empty note and message."
             continue
-        problems = []
-        if len(out["note"]) > NOTE_MAX:
-            problems.append(f'"note" is {len(out["note"])} characters; it must be at most {NOTE_MAX - 10}. Shorten it.')
-        if len(out["message"]) > MESSAGE_MAX:
-            problems.append(f'"message" is {len(out["message"])} characters; it must be at most {MESSAGE_MAX}.')
-        if problems:
-            feedback = " ".join(problems)
-            if attempt == 0:
-                continue
+        if len(out["note"]) < round(limit * 0.78) and attempt == 0:      # too short: one full retry asking for the specifics
+            held = out
+            feedback = (f'"note" is only {len(out["note"])} characters; use {round(limit * 0.85)} to {limit - 5} by adding the specific '
+                        f"detail from their work and the sender's connecting project.")
+            continue
         break
+    out = out or held
     if not out:
         raise ValueError("The drafting model didn't return a usable draft. Try again.")
-    warnings = list(out.get("warnings") or [])
-    if len(out["note"]) > NOTE_MAX:
-        warnings.append(f"The connection note is {len(out['note'])} characters; LinkedIn allows {NOTE_MAX}. Trim it before sending.")
+    out["note"], out["message"] = _tidy(out["note"]), _tidy(out["message"])
+    issues = verify_issues(resume_text, profile_text, out["note"], out["message"], goal)
+    if issues:                                   # one automatic repair, then re-check what's left
+        fixed = repair(resume_text, profile_text, out["note"], out["message"], issues, goal)
+        if fixed:
+            out["note"], out["message"] = fixed
+            issues = verify_issues(resume_text, profile_text, out["note"], out["message"], goal)
+    if len(out["note"]) > limit:                 # lengths last: facts first, then squeeze to fit
+        out["note"] = fit(out["note"], "connection note", limit) or out["note"]
+    if len(out["message"]) > MESSAGE_MAX:
+        out["message"] = fit(out["message"], "message", MESSAGE_MAX) or out["message"]
+
+    warnings = list(out.get("warnings") or [])   # all warnings describe the FINAL text
+    if len(out["note"]) > limit:
+        warnings.append(f"The connection note is {len(out['note'])} characters; LinkedIn allows {limit}. Trim it before sending.")
     if len((profile_text or "").strip()) < 120:
         warnings.append("Very little profile text was provided, so the draft can only be general. Paste more of their profile for a specific one.")
     status = usc_override or usc["status"]
-    if status == "yes" and "usc" not in (out["note"] + out["message"]).lower() and "trojan" not in (out["note"] + out["message"]).lower():
+    final = (out["note"] + out["message"]).lower()
+    if status == "yes" and "usc" not in final and "trojan" not in final:
         warnings.append("They look like a USC alum but the draft doesn't mention it; add a line or regenerate.")
-    warnings += verify(resume_text, profile_text, out["note"], out["message"])
+    if llm.last_model and llm.last_model != config.GROQ_MODEL:
+        warnings.insert(0, f"Drafted with a smaller backup model ({llm.last_model}) because the main model's daily limit is used up. "
+                           "Read this one more carefully, or regenerate tomorrow.")
+    warnings += _format_issues(issues)
     return {"recipient": out.get("recipient") or {}, "usc": {**usc, "used": status}, "hooks": out.get("hooks") or [],
-            "note": _tidy(out["note"]), "message": _tidy(out["message"]), "warnings": warnings}
+            "note": _tidy(out["note"]), "message": _tidy(out["message"]), "warnings": warnings,
+            "limits": {"note_max": note_max()}}

@@ -38,3 +38,4 @@ DIGEST_SEND_EMPTY = os.getenv("DIGEST_SEND_EMPTY", "0") in ("1", "true", "True")
 OUTREACH_GOAL = os.getenv("OUTREACH_GOAL", "I'm looking for new grad / co-op software and ML roles and would value a short conversation or advice. "
                           "I am not asking for a referral up front.")
 DATA_DIR = DB_PATH.parent
+LINKEDIN_NOTE_MAX = int(os.getenv("LINKEDIN_NOTE_MAX", "200"))      # connection-note limit: 200 on free accounts, 300 on Premium
