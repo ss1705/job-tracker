@@ -27,3 +27,5 @@ FOLLOWUP_DAYS = int(os.getenv("FOLLOWUP_DAYS", "7"))
 FOLLOWUP_MAX_DAYS = int(os.getenv("FOLLOWUP_MAX_DAYS", "30"))
 CHECKIN_DAYS = int(os.getenv("CHECKIN_DAYS", "7"))
 CONTACT_TYPES = ["Referral", "Coffee chat", "Recruiter"]
+CONTACT_KINDS = ["Coffee chat", "Referral", "Recruiter", "Alum", "Other"]
+CONTACT_STAGES = ["To reach out", "Reached out", "Chat scheduled", "Chatted", "Referred", "Closed"]

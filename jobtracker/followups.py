@@ -50,3 +50,38 @@ def flags(app: dict, has_response: bool, last_event_local: str | None, today: da
         if ref and (today - ref).days >= config.CHECKIN_DAYS:
             out.update(follow_up_due=True, follow_up_reason=f"{status}: no update for {(today - ref).days} days, check in")
     return out
+
+
+REACH_OUT_NUDGE_DAYS = 7      # "Reached out" with no reply after this long
+REACH_OUT_GIVE_UP_DAYS = 28   # ...and we stop nagging after this
+THANK_YOU_WINDOW_DAYS = 14    # after a chat, the thank-you nudge lasts this long
+
+
+def contact_flags(c: dict, today: date) -> dict:
+    """Reminder state for a contact. A set remind_on date (future = snoozed) overrides the automatic rules."""
+    out = {"due": False, "reason": ""}
+    stage = c["stage"]
+    if stage == "Closed" or (stage == "Referred" and not c.get("remind_on")):
+        return out          # closed = done (even with a stale reminder); a referral given only reminds if you set a date
+    remind = _d(c.get("remind_on"))
+    if remind:
+        if remind <= today:
+            out.update(due=True, reason=f"Reminder set for {remind:%b} {remind.day}")
+        return out
+
+    chat, last = _d(c.get("chat_date")), _d(c.get("last_contacted_at"))
+    created = _d(c.get("created_at"))
+    if stage == "Chat scheduled" and chat and 0 <= (chat - today).days <= 1:
+        when = "today" if chat == today else "tomorrow"
+        out.update(due=True, reason=f"Chat {when}: prep your questions")
+    elif stage == "Reached out":
+        ref = last or created
+        waited = (today - ref).days if ref else 0
+        if REACH_OUT_NUDGE_DAYS <= waited <= REACH_OUT_GIVE_UP_DAYS:
+            out.update(due=True, reason=f"Reached out {waited} days ago, no reply")
+    elif stage == "Chatted" and chat:
+        since = (today - chat).days
+        thanked = bool(last and last >= chat)
+        if not thanked and 1 <= since <= THANK_YOU_WINDOW_DAYS:
+            out.update(due=True, reason=f"Chatted {since} day{'s' if since != 1 else ''} ago: send a thank-you / follow-up")
+    return out

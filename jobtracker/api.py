@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, db, followups, gmail, parser, scheduler, sync
+from . import config, contacts, db, followups, gmail, parser, scheduler, sync
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -25,6 +25,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Job Tracker", lifespan=lifespan)
+app.include_router(contacts.router)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
@@ -244,10 +245,13 @@ def stats():
     total = sum(by_status.values())
     responded = sum(n for s, n in by_status.items() if s in ("OA", "Interview", "Offer", "Rejected"))
     apps = list_applications()
+    with db.session() as conn:
+        people = contacts.list_with_flags(conn)
     return {"total": total, "by_status": by_status, "needs_review": review,
             "response_rate": round(responded / total, 3) if total else 0,
             "follow_up": sum(a["follow_up_due"] for a in apps),
-            "deadline_soon": sum(1 for a in apps if a["deadline_days"] is not None and a["deadline_days"] <= 3)}
+            "deadline_soon": sum(1 for a in apps if a["deadline_days"] is not None and a["deadline_days"] <= 3),
+            "contacts": len(people), "contacts_due": sum(c["follow_up_due"] for c in people)}
 
 
 @app.post("/api/sync")

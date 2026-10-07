@@ -101,6 +101,15 @@
   button.link { background: none; border: 0; padding: 2px 0; margin-top: 4px; color: var(--accent); font-size: 12px; cursor: pointer; }
   button.link:hover { text-decoration: underline; }
   .badge.contact { background: var(--surface-2); color: var(--muted); }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 0 0 20px; }
+  .tab { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 14px; margin-bottom: -1px; color: var(--muted); font-weight: 600; }
+  .tab:hover { color: var(--text); border-color: transparent; }
+  .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .count { margin-left: 6px; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--Interview) 18%, transparent); color: var(--Interview); }
+  .tab .count:empty { display: none; }
+  td.company small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+  a.ext { margin-left: 6px; font-size: 12px; font-weight: 400; }
+  .rel { margin-left: 6px; font-size: 11px; font-weight: 600; color: var(--accent); }
   .dash { color: var(--muted); opacity: .6; }
   .type-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
 
@@ -156,9 +165,16 @@
     <div class="row">
       <a href="/api/export.csv">Export CSV</a>
       <button class="primary" id="addBtn">+ Add application</button>
+      <button class="primary" id="addContactBtn" hidden>+ Add contact</button>
     </div>
   </header>
 
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="apps" aria-selected="true">Applications <span class="count" id="tabAppsCount"></span></button>
+    <button class="tab" role="tab" data-tab="contacts" aria-selected="false">Contacts <span class="count" id="tabContactsCount"></span></button>
+  </nav>
+
+  <div id="appsView">
   <section class="card">
     <div class="sync">
       <h2>Sync from Gmail</h2>
@@ -190,6 +206,22 @@
     <div id="blockedList" class="row" style="margin-top:10px"></div>
     <div class="muted" style="margin-top:8px">Emails from these domains are ignored on sync. Add more with “Delete &amp; block sender”, or set BLOCKED_SENDERS in .env.</div>
   </details>
+  </div>
+
+  <div id="contactsView" hidden>
+    <div class="chips" id="cChips" style="margin-top:0"></div>
+    <div class="toolbar">
+      <input id="cq" type="search" placeholder="Search name, company or notes…">
+      <select id="kindFilter" aria-label="Filter by kind"><option value="">All kinds</option></select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Company</th><th>Kind</th><th>Stage</th><th>Chat</th><th>Last contact</th></tr></thead>
+        <tbody id="cRows"></tbody>
+      </table>
+      <div class="empty muted" id="cEmpty" hidden>No contacts yet. Add the people you’ve had coffee chats with, referrals and recruiters, and get reminded to follow up.</div>
+    </div>
+  </div>
 </main>
 
 <dialog id="addDlg">
@@ -204,6 +236,24 @@
     <label>Contact <span style="opacity:.7">(enables follow-up reminders)</span><select name="contact_type"><option value="">None (cold application)</option><option>Referral</option><option>Coffee chat</option><option>Recruiter</option></select></label>
     <label>Contact name<input name="contact_name" placeholder="e.g. Priya (ex-colleague)"></label>
     <label>Link<input name="link" type="url" placeholder="https://…"></label>
+    <div class="actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button class="primary" value="ok">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="contactDlg">
+  <form method="dialog" id="contactForm">
+    <h3>Add contact</h3>
+    <label>Name *<input name="name" required></label>
+    <label>Company<input name="company"></label>
+    <label>Their title<input name="title" placeholder="e.g. Staff Engineer"></label>
+    <label>Kind<select name="kind"></select></label>
+    <label>Stage<select name="stage"></select></label>
+    <label>Chat date <span style="opacity:.7">(scheduled or held)</span><input name="chat_date" type="date"></label>
+    <label>Profile link<input name="link" type="url" placeholder="https://linkedin.com/in/…"></label>
+    <label>Related application<select name="application_id"></select></label>
     <div class="actions">
       <button value="cancel" formnovalidate>Cancel</button>
       <button class="primary" value="ok">Add</button>
@@ -240,7 +290,9 @@ async function api(path, opts = {}) {
 
 async function load() {
   [apps, stats] = await Promise.all([api("/api/applications"), api("/api/stats")]);
-  $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") + (stats.follow_up ? ` · ${stats.follow_up} to follow up` : "") : "Nothing tracked yet";
+  $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") + (stats.follow_up ? ` · ${stats.follow_up} to follow up` : "") + (stats.contacts_due ? ` · ${stats.contacts_due} contact${stats.contacts_due > 1 ? "s" : ""} to follow up` : "") : "Nothing tracked yet";
+  $("#tabAppsCount").textContent = stats.follow_up || "";
+  $("#tabContactsCount").textContent = stats.contacts_due || "";
   renderChips(); renderRows();
 }
 
@@ -435,8 +487,154 @@ async function showLastSync() {
     ? `Last sync ${when} stopped early (${l.processed}/${l.total} processed): ${l.error}`
     : `Last synced ${when}: ${detail}.${auto}`;
 }
-setInterval(() => { if (!document.hidden) { showLastSync(); load(); } }, 60000);   // pick up background syncs
-load().then(poll); loadBlocked(); showLastSync();
+setInterval(() => { if (!document.hidden) { showLastSync(); load(); loadContacts(); } }, 60000);   // pick up background syncs
+
+// ---------------------------------------------------------------- contacts
+const KINDS = ["Coffee chat", "Referral", "Recruiter", "Alum", "Other"];
+const CSTAGES = ["To reach out", "Reached out", "Chat scheduled", "Chatted", "Referred", "Closed"];
+const STAGE_COLOR = { "To reach out": "Saved", "Reached out": "Applied", "Chat scheduled": "OA", "Chatted": "Interview", "Referred": "Offer", "Closed": "Withdrawn" };
+let contacts = [], cFilter = new URLSearchParams(location.hash.slice(1)).get("cfilter") || "all", openCid = +new URLSearchParams(location.hash.slice(1)).get("contact") || null;
+
+const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const dayDiff = s => Math.round((new Date(s.slice(0, 10) + "T00:00:00") - new Date(todayIso() + "T00:00:00")) / 864e5);
+const agoDate = s => {
+  if (!s) return DASH;
+  const d = -dayDiff(s);
+  return d <= 0 ? "today" : d === 1 ? "yesterday" : d < 14 ? `${d}d ago` : d < 60 ? `${Math.round(d / 7)}w ago` : fmt(s);
+};
+const relChat = s => {
+  if (!s) return "";
+  const d = dayDiff(s);
+  return d === 0 ? "today" : d > 0 && d < 14 ? `in ${d}d` : "";
+};
+const appOptions = (selected) => '<option value="">None</option>' + [...apps].sort((a, b) => a.company.localeCompare(b.company))
+  .map(a => `<option value="${a.id}" ${a.id === selected ? "selected" : ""}>${esc(a.company)} — ${esc(a.role) || "no role"}</option>`).join("");
+
+async function loadContacts() {
+  contacts = await api("/api/contacts");
+  renderContactChips(); renderContacts();
+}
+
+function renderContactChips() {
+  const by = {}; contacts.forEach(c => by[c.stage] = (by[c.stage] || 0) + 1);
+  const due = contacts.filter(c => c.follow_up_due).length;
+  const chips = [["all", "All", contacts.length, "var(--muted)"],
+    ...CSTAGES.filter(s => by[s]).map(s => [s, s, by[s], `var(--${STAGE_COLOR[s]})`])];
+  if (due) chips.push(["due", "Follow up", due, "var(--Interview)"]);
+  $("#cChips").innerHTML = chips.map(([k, label, n, c]) =>
+    `<button class="chip ${k === "due" ? "due" : ""}" data-cf="${k}" aria-pressed="${cFilter === k}"><span class="dot" style="background:${c}"></span>${esc(label)} <b>${n}</b></button>`).join("");
+}
+
+function visibleContacts() {
+  const q = $("#cq").value.trim().toLowerCase(), kind = $("#kindFilter").value;
+  const list = contacts.filter(c =>
+    (cFilter === "all" || (cFilter === "due" ? c.follow_up_due : c.stage === cFilter)) &&
+    (!kind || c.kind === kind) &&
+    (!q || `${c.name} ${c.company} ${c.title} ${c.notes}`.toLowerCase().includes(q)));
+  if (cFilter === "due") list.sort((a, b) => (a.last_contacted_at || a.chat_date || a.created_at).localeCompare(b.last_contacted_at || b.chat_date || b.created_at));
+  return list;
+}
+
+function renderContacts() {
+  const list = visibleContacts();
+  $("#cEmpty").hidden = contacts.length > 0;
+  $("#cRows").innerHTML = list.map(c => `
+    <tr class="app ${c.id === openCid ? "open" : ""}" data-cid="${c.id}">
+      <td class="company">${esc(c.name)}${c.link ? `<a class="ext" href="${esc(c.link)}" target="_blank" rel="noopener" title="Open profile">↗</a>` : ""}${c.follow_up_due ? `<span class="badge due" title="${esc(c.follow_up_reason)}">follow up</span>` : ""}${c.title ? `<small>${esc(c.title)}</small>` : ""}</td>
+      <td>${esc(c.company) || DASH}${c.application_label ? `<small class="muted" style="display:block;font-size:12px" title="Related application">↳ ${esc(c.application_label)}</small>` : ""}</td>
+      <td><span class="type-tag">${esc(c.kind)}</span></td>
+      <td><select class="status" aria-label="Stage" data-cid="${c.id}" style="--c:var(--${STAGE_COLOR[c.stage]})">
+        ${CSTAGES.map(s => `<option ${s === c.stage ? "selected" : ""}>${s}</option>`).join("")}</select></td>
+      <td class="date">${c.chat_date ? fmt(c.chat_date) : DASH}${relChat(c.chat_date) ? `<span class="rel">${relChat(c.chat_date)}</span>` : ""}</td>
+      <td class="date">${agoDate(c.last_contacted_at)}</td>
+    </tr>${c.id === openCid ? `<tr class="detail"><td colspan="6">${contactDetail(c)}</td></tr>` : ""}`).join("");
+  if (!list.length && contacts.length) $("#cRows").innerHTML = '<tr><td colspan="6" class="empty muted">No contacts match these filters.</td></tr>';
+}
+
+function contactDetail(c) {
+  const opts = (arr, cur) => arr.map(v => `<option ${v === cur ? "selected" : ""}>${v}</option>`).join("");
+  return `<div class="detail-grid" style="grid-template-columns:1fr"><div><h4>Details</h4>
+    <div class="form-grid" data-cid="${c.id}">
+      <input data-k="name" value="${esc(c.name)}" placeholder="Name" aria-label="Name">
+      <input data-k="company" value="${esc(c.company)}" placeholder="Company" aria-label="Company">
+      <input data-k="title" value="${esc(c.title)}" placeholder="Their title" aria-label="Their title">
+      <input data-k="link" value="${esc(c.link)}" placeholder="Profile link" aria-label="Profile link">
+      <label class="field">Kind<select data-k="kind">${opts(KINDS, c.kind)}</select></label>
+      <label class="field">Related application<select data-k="application_id">${appOptions(c.application_id)}</select></label>
+      <label class="field">Chat date<input type="date" data-k="chat_date" value="${esc((c.chat_date || "").slice(0, 10))}"></label>
+      <label class="field">Remind me on<input type="date" data-k="remind_on" value="${esc((c.remind_on || "").slice(0, 10))}"></label>
+      <textarea class="wide" data-k="notes" placeholder="Notes: what you talked about, asks, next steps…" aria-label="Notes">${esc(c.notes)}</textarea>
+    </div>
+    ${c.follow_up_due ? `<div class="sync-note" style="margin-top:10px"><b>${esc(c.follow_up_reason)}.</b></div>` : ""}
+    <div class="actions" data-cid="${c.id}">
+      <button data-cact="followed">Followed up</button><button data-cact="snooze">Snooze 1 week</button>
+      <span class="spacer"></span><button class="danger" data-cact="delete">Delete</button></div>
+  </div></div>`;
+}
+
+$("#cChips").addEventListener("click", e => { const b = e.target.closest("[data-cf]"); if (b) { cFilter = b.dataset.cf; renderContactChips(); renderContacts(); } });
+$("#cq").addEventListener("input", renderContacts);
+$("#kindFilter").innerHTML = '<option value="">All kinds</option>' + KINDS.map(k => `<option>${k}</option>`).join("");
+$("#kindFilter").addEventListener("change", renderContacts);
+
+$("#cRows").addEventListener("click", e => {
+  if (e.target.closest("select, input, textarea, button, a")) return;
+  const tr = e.target.closest("tr.app");
+  if (tr) { openCid = openCid === +tr.dataset.cid ? null : +tr.dataset.cid; renderContacts(); }
+});
+$("#cRows").addEventListener("change", async e => {
+  const t = e.target;
+  if (t.classList.contains("status")) {                      // stage dropdown in the row
+    const id = +t.dataset.cid, c = contacts.find(x => x.id === id), body = { stage: t.value };
+    if (t.value === "Chatted" && !c.chat_date) body.chat_date = todayIso();                // starts the thank-you nudge
+    if (t.value === "Reached out" && !c.last_contacted_at) body.last_contacted_at = todayIso();   // starts the silence clock
+    await api(`/api/contacts/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+    await loadContacts(); await load();
+  } else if (t.dataset.k) {                                  // field in the expanded form
+    const id = +t.closest("[data-cid]").dataset.cid;
+    const v = t.dataset.k === "application_id" ? (t.value ? +t.value : null) : t.value;
+    await api(`/api/contacts/${id}`, { method: "PATCH", body: JSON.stringify({ [t.dataset.k]: v }) });
+    await loadContacts(); if (t.dataset.k === "application_id") await load();
+  }
+});
+$("#cRows").addEventListener("click", async e => {
+  const b = e.target.closest("[data-cact]"); if (!b) return;
+  const id = +b.closest("[data-cid]").dataset.cid;
+  if (b.dataset.cact === "followed") await api(`/api/contacts/${id}/followed-up`, { method: "POST" });
+  if (b.dataset.cact === "snooze") await api(`/api/contacts/${id}/snooze?days=7`, { method: "POST" });
+  if (b.dataset.cact === "delete") {
+    if (!confirm("Delete this contact?")) return;
+    await api(`/api/contacts/${id}`, { method: "DELETE" }); openCid = null;
+  }
+  await loadContacts(); await load();
+});
+
+// add-contact dialog
+$("#contactForm [name=kind]").innerHTML = KINDS.map(k => `<option>${k}</option>`).join("");
+$("#contactForm [name=stage]").innerHTML = CSTAGES.map(s => `<option>${s}</option>`).join("");
+$("#addContactBtn").onclick = () => { $("#contactForm [name=application_id]").innerHTML = appOptions(null); $("#contactDlg").showModal(); };
+$("#contactForm").addEventListener("submit", async e => {
+  if (e.submitter?.value !== "ok") return;
+  const body = Object.fromEntries(new FormData(e.target));
+  for (const k of ["chat_date", "link"]) if (!body[k]) delete body[k];
+  if (body.application_id) body.application_id = +body.application_id; else delete body.application_id;
+  if (body.stage === "Chatted" && !body.chat_date) body.chat_date = todayIso();
+  await api("/api/contacts", { method: "POST", body: JSON.stringify(body) });
+  e.target.reset(); await loadContacts(); await load();
+});
+
+// tabs
+function setTab(tab) {
+  const contactsTab = tab === "contacts";
+  $("#appsView").hidden = contactsTab; $("#contactsView").hidden = !contactsTab;
+  $("#addBtn").hidden = contactsTab; $("#addContactBtn").hidden = !contactsTab;
+  document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
+  store.set("tab", tab);
+}
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
+setTab(new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps");
+
+load().then(() => { poll(); loadContacts(); }); loadBlocked(); showLastSync();
 </script>
 </body>
 </html>

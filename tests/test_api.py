@@ -63,3 +63,55 @@ def test_followed_up_and_snooze(client):
     assert c.get("/api/applications").json()[0]["follow_up_due"]
     assert c.post(f"/api/applications/{app_id}/snooze?days=7").json()["follow_up_at"] == iso(7)
     assert not c.get("/api/applications").json()[0]["follow_up_due"]
+
+
+def test_contacts_flow_and_reminders(client):
+    c, db, sync = client
+    today = date.today()
+    d = lambda n: (today + timedelta(days=n)).isoformat()
+
+    app_id = c.post("/api/applications", json={"company": "Acme", "role": "SWE", "status": "Applied", "applied_at": d(-3)}).json()["id"]
+    assert c.get("/api/applications").json()[0]["contact_type"] == ""
+
+    # linking a referral contact switches on that application's reminders
+    cid = c.post("/api/contacts", json={"name": "Priya", "company": "Acme", "kind": "Referral", "stage": "Reached out",
+                                        "application_id": app_id}).json()["id"]
+    a = c.get("/api/applications").json()[0]
+    assert (a["contact_type"], a["contact_name"]) == ("Referral", "Priya")
+    person = c.get("/api/contacts").json()[0]
+    assert person["application_label"] == "Acme — SWE" and not person["follow_up_due"]    # reached out today
+
+    # coffee chat happened yesterday, no thank-you yet -> nudge; "followed up" clears it
+    c.patch(f"/api/contacts/{cid}", json={"stage": "Chatted", "chat_date": d(-2)})
+    p = c.get("/api/contacts").json()[0]
+    assert p["follow_up_due"] and "thank-you" in p["follow_up_reason"]
+    assert c.get("/api/stats").json()["contacts_due"] == 1
+    c.post(f"/api/contacts/{cid}/followed-up")
+    assert not c.get("/api/contacts").json()[0]["follow_up_due"]
+
+    # upcoming chat: heads-up the day before; snooze pushes the manual reminder out
+    c.patch(f"/api/contacts/{cid}", json={"stage": "Chat scheduled", "chat_date": d(1), "last_contacted_at": None})
+    assert "tomorrow" in c.get("/api/contacts").json()[0]["follow_up_reason"]
+    assert c.post(f"/api/contacts/{cid}/snooze?days=3").json()["remind_on"] == d(3)
+    assert not c.get("/api/contacts").json()[0]["follow_up_due"]
+
+    # validation + deleting the application only unlinks the contact
+    assert c.patch(f"/api/contacts/{cid}", json={"kind": "Nonsense"}).status_code == 422
+    assert c.patch(f"/api/contacts/{cid}", json={"stage": "Nope"}).status_code == 422
+    c.delete(f"/api/applications/{app_id}")
+    assert c.get("/api/contacts").json()[0]["application_id"] is None
+
+
+def test_contact_reach_out_rules():
+    from jobtracker import followups
+    today = date(2026, 10, 20)
+    base = {"stage": "Reached out", "chat_date": None, "last_contacted_at": None, "remind_on": None, "created_at": "2026-10-10 12:00:00"}
+    f = lambda **kw: followups.contact_flags({**base, **kw}, today)["due"]
+    assert f()                                         # 10 days of silence
+    assert not f(created_at="2026-10-18 09:00:00")     # only 2 days
+    assert not f(created_at="2026-08-01 09:00:00")     # gone quiet, stop nagging
+    assert not f(last_contacted_at="2026-10-17")       # nudged recently
+    assert not f(stage="Closed", remind_on="2026-10-01")            # closed means done, stale reminder ignored
+    assert f(stage="Referred", remind_on="2026-10-01")              # but a reminder you set after a referral counts
+    assert not f(stage="Referred")
+    assert f(stage="To reach out", remind_on="2026-10-19")

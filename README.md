@@ -37,6 +37,13 @@ Rows the parser wasn't sure about are marked **review**. Editing a status by han
   Cold applications never get automatic reminders, but any application can have a manual "Remind me on" date.
   **Followed up** restarts the clock, **Snooze 1 week** delays it.
 
+## Contacts
+
+The **Contacts** tab tracks people: coffee chats, referrals, recruiters, alumni. Each has a kind, a stage (*To reach
+out → Reached out → Chat scheduled → Chatted → Referred → Closed*), a chat date, notes and an optional related
+application (linking one turns on that application's follow-up reminders). Reminders: *Reached out* with no reply after
+7 days, a thank-you nudge the day after a chat, a heads-up the day before a scheduled chat, plus any "Remind me on" date.
+
 ## Auto-sync
 
 While the server runs it re-syncs Gmail every `AUTO_SYNC_MINUTES` (default 120; `0` turns it off), looking back

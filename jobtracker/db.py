@@ -49,6 +49,23 @@ CREATE TABLE IF NOT EXISTS blocked_senders (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- people to keep in touch with: coffee chats, referrals, recruiters
+CREATE TABLE IF NOT EXISTS contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    company TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'Coffee chat',
+    stage TEXT NOT NULL DEFAULT 'To reach out',
+    link TEXT NOT NULL DEFAULT '',            -- LinkedIn / profile URL
+    chat_date TEXT,                           -- when the chat is scheduled / happened
+    last_contacted_at TEXT,
+    remind_on TEXT,                           -- manual reminder (a future date also snoozes the automatic ones)
+    notes TEXT NOT NULL DEFAULT '',
+    application_id INTEGER REFERENCES applications(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 -- every Gmail message we've looked at, so re-syncs are cheap and idempotent
