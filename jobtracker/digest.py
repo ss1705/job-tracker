@@ -29,7 +29,7 @@ def recent_responses(conn, hours: int = 30) -> list[dict]:
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     try:
         rows = conn.execute(
-            "SELECT name, company, response_kind, responded_at FROM contacts WHERE response_logged_at >= ? ORDER BY response_logged_at",
+            "SELECT name, company, response_kind, responded_at FROM contacts WHERE response_logged_at >= ? AND needs_triage=0 ORDER BY response_logged_at",
             (since,)).fetchall()
     except Exception:
         return []     # contacts outreach columns not present yet
@@ -43,6 +43,10 @@ def build(apps: list[dict], people: list[dict], events: list[dict], responses: l
     lines += [f"{r['name']}" + (f" ({r['company']})" if r["company"] else "") + f" {r['response_kind'].lower()} on LinkedIn" for r in responses]
     if lines:
         sections.append(("New responses", lines))
+
+    to_sort = [p for p in people if p.get("needs_triage")]
+    if to_sort:
+        sections.append(("LinkedIn people to sort", [f"{len(to_sort)} new LinkedIn contact{'s' if len(to_sort) != 1 else ''} to keep or ignore (open the Contacts tab)"]))
 
     due_people = sorted((p for p in people if p["follow_up_due"]), key=lambda p: p["name"])
     if due_people:

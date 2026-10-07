@@ -60,6 +60,8 @@ THANK_YOU_WINDOW_DAYS = 14    # after a chat, the thank-you nudge lasts this lon
 def contact_flags(c: dict, today: date) -> dict:
     """Reminder state for a contact. A set remind_on date (future = snoozed) overrides the automatic rules."""
     out = {"due": False, "reason": ""}
+    if c.get("needs_triage"):
+        return out          # auto-added from LinkedIn and not sorted yet: no nudges until the user keeps it
     stage = c["stage"]
     if stage == "Closed" or (stage == "Referred" and not c.get("remind_on")):
         return out          # closed = done (even with a stale reminder); a referral given only reminds if you set a date

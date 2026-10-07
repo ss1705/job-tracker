@@ -212,6 +212,7 @@
   </div>
 
   <div id="contactsView" hidden>
+    <div id="sortBanner" class="card" hidden style="margin-bottom:14px;display:none"></div>
     <div class="chips" id="cChips" style="margin-top:0"></div>
     <div class="toolbar">
       <input id="cq" type="search" placeholder="Search name, company or notes…">
@@ -325,9 +326,9 @@ async function api(path, opts = {}) {
 
 async function load() {
   [apps, stats] = await Promise.all([api("/api/applications"), api("/api/stats")]);
-  $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") + (stats.follow_up ? ` · ${stats.follow_up} to follow up` : "") + (stats.contacts_due ? ` · ${stats.contacts_due} contact${stats.contacts_due > 1 ? "s" : ""} to follow up` : "") : "Nothing tracked yet";
+  $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") + (stats.follow_up ? ` · ${stats.follow_up} to follow up` : "") + (stats.contacts_due ? ` · ${stats.contacts_due} contact${stats.contacts_due > 1 ? "s" : ""} to follow up` : "") + (stats.contacts_to_sort ? ` · ${stats.contacts_to_sort} to sort` : "") : "Nothing tracked yet";
   $("#tabAppsCount").textContent = stats.follow_up || "";
-  $("#tabContactsCount").textContent = stats.contacts_due || "";
+  $("#tabContactsCount").textContent = (stats.contacts_due || 0) + (stats.contacts_to_sort || 0) || "";
   renderChips(); renderRows();
 }
 
@@ -525,7 +526,7 @@ async function showLastSync() {
 setInterval(() => { if (!document.hidden) { showLastSync(); load(); loadContacts(); } }, 60000);   // pick up background syncs
 
 // ---------------------------------------------------------------- contacts
-const KINDS = ["Cold outreach", "Coffee chat", "Referral", "Recruiter", "Alum", "Other"];
+const KINDS = ["Cold outreach", "Coffee chat", "Referral", "Recruiter", "Alum", "Friend / colleague", "Other"];
 const CSTAGES = ["To reach out", "Reached out", "Replied", "Chat scheduled", "Chatted", "Referred", "Closed"];
 const STAGE_COLOR = { "To reach out": "Saved", "Reached out": "Applied", "Replied": "Interview", "Chat scheduled": "OA", "Chatted": "Offer", "Referred": "Offer", "Closed": "Withdrawn" };
 let contacts = [], cFilter = new URLSearchParams(location.hash.slice(1)).get("cfilter") || "all", openCid = +new URLSearchParams(location.hash.slice(1)).get("contact") || null;
@@ -556,16 +557,19 @@ function renderContactChips() {
   const chips = [["all", "All", contacts.length, "var(--muted)"],
     ...CSTAGES.filter(s => by[s]).map(s => [s, s, by[s], `var(--${STAGE_COLOR[s]})`])];
   if (due) chips.push(["due", "Follow up", due, "var(--Interview)"]);
+  const sortN = contacts.filter(c => c.needs_triage).length;
+  if (sortN) chips.push(["sort", "To sort", sortN, "var(--warn)"]);
   $("#cChips").innerHTML = chips.map(([k, label, n, c]) =>
-    `<button class="chip ${k === "due" ? "due" : ""}" data-cf="${k}" aria-pressed="${cFilter === k}"><span class="dot" style="background:${c}"></span>${esc(label)} <b>${n}</b></button>`).join("");
+    `<button class="chip ${k === "due" ? "due" : k === "sort" ? "warn" : ""}" data-cf="${k}" aria-pressed="${cFilter === k}"><span class="dot" style="background:${c}"></span>${esc(label)} <b>${n}</b></button>`).join("");
 }
 
 function visibleContacts() {
   const q = $("#cq").value.trim().toLowerCase(), kind = $("#kindFilter").value;
   const list = contacts.filter(c =>
-    (cFilter === "all" || (cFilter === "due" ? c.follow_up_due : c.stage === cFilter)) &&
+    (cFilter === "all" || (cFilter === "due" ? c.follow_up_due : cFilter === "sort" ? c.needs_triage : c.stage === cFilter)) &&
     (!kind || c.kind === kind) &&
     (!q || `${c.name} ${c.company} ${c.title} ${c.notes}`.toLowerCase().includes(q)));
+  list.sort((a, b) => (b.needs_triage - a.needs_triage));            // unsorted LinkedIn people first
   if (cFilter === "due") list.sort((a, b) => (a.last_contacted_at || a.chat_date || a.created_at).localeCompare(b.last_contacted_at || b.chat_date || b.created_at));
   return list;
 }
@@ -580,18 +584,37 @@ function responseCell(c) {
   return DASH;
 }
 
+function renderSortBanner() {
+  const n = contacts.filter(c => c.needs_triage).length, el = $("#sortBanner");
+  el.hidden = !n; el.style.display = n ? "" : "none";
+  if (!n) return;
+  el.innerHTML = `<div class="row"><div style="flex:1;min-width:240px"><b>${n} ${n === 1 ? "person" : "people"} from LinkedIn to sort</b>
+    <div class="muted" style="font-size:13px">Friends and colleagues aren’t outreach. Choose what each person is, or ignore them. No reminders are sent until you keep someone.</div></div>
+    <button data-banner="review">Review</button><button data-banner="keepall">Keep all as cold outreach</button></div>`;
+}
+$("#sortBanner").addEventListener("click", async e => {
+  const b = e.target.closest("[data-banner]"); if (!b) return;
+  if (b.dataset.banner === "review") { cFilter = "sort"; renderContactChips(); renderContacts(); return; }
+  if (!confirm("Keep everyone in the To sort list as cold outreach? You can still change anyone’s kind afterwards.")) return;
+  await api("/api/contacts/triage/keep-all", { method: "POST", body: JSON.stringify({ kind: "Cold outreach" }) });
+  await loadContacts(); await load();
+});
+
 function renderContacts() {
+  renderSortBanner();
   const list = visibleContacts();
   $("#cEmpty").hidden = contacts.length > 0;
   $("#cRows").innerHTML = list.map(c => `
     <tr class="app ${c.id === openCid ? "open" : ""}" data-cid="${c.id}">
-      <td class="company">${esc(c.name)}${c.link ? `<a class="ext" href="${esc(c.link)}" target="_blank" rel="noopener" title="Open profile">↗</a>` : ""}${c.follow_up_due ? `<span class="badge due" title="${esc(c.follow_up_reason)}">follow up</span>` : ""}${c.title ? `<small>${esc(c.title)}</small>` : ""}</td>
+      <td class="company">${esc(c.name)}${c.needs_triage ? '<span class="badge warn">to sort</span>' : ""}${c.link ? `<a class="ext" href="${esc(c.link)}" target="_blank" rel="noopener" title="Open profile">↗</a>` : ""}${c.follow_up_due ? `<span class="badge due" title="${esc(c.follow_up_reason)}">follow up</span>` : ""}${c.title ? `<small>${esc(c.title)}</small>` : ""}</td>
       <td>${esc(c.company) || DASH}${c.application_label ? `<small class="muted" style="display:block;font-size:12px" title="Related application">↳ ${esc(c.application_label)}</small>` : ""}</td>
-      <td><span class="type-tag">${esc(c.kind)}</span></td>
+      <td>${c.needs_triage
+        ? `<select class="kind-pick" data-cid="${c.id}" aria-label="Keep as"><option value="">Keep as…</option>${KINDS.map(k => `<option>${k}</option>`).join("")}</select>`
+        : `<span class="type-tag">${esc(c.kind)}</span>`}</td>
       <td><select class="status" aria-label="Stage" data-cid="${c.id}" style="--c:var(--${STAGE_COLOR[c.stage]})">
         ${CSTAGES.map(s => `<option ${s === c.stage ? "selected" : ""}>${s}</option>`).join("")}</select></td>
       <td class="date">${c.outreach_sent_at ? fmt(c.outreach_sent_at) : DASH}${c.channel ? `<span class="rel" style="color:var(--muted)">${esc(c.channel)}</span>` : ""}</td>
-      <td class="date">${responseCell(c)}</td>
+      <td class="date">${responseCell(c)}${c.needs_triage ? `<div style="margin-top:6px"><button class="link danger" data-cact="ignore" data-cid="${c.id}" title="Not someone to track: remove and never add again">Ignore</button></div>` : ""}</td>
     </tr>${c.id === openCid ? `<tr class="detail"><td colspan="6">${contactDetail(c)}</td></tr>` : ""}`).join("");
   if (!list.length && contacts.length) $("#cRows").innerHTML = '<tr><td colspan="6" class="empty muted">No contacts match these filters.</td></tr>';
 }
@@ -633,6 +656,11 @@ $("#cRows").addEventListener("click", e => {
 });
 $("#cRows").addEventListener("change", async e => {
   const t = e.target;
+  if (t.classList.contains("kind-pick")) {                   // sorting an unsorted LinkedIn person: choose a kind = keep
+    if (!t.value) return;
+    await api(`/api/contacts/${t.dataset.cid}/keep`, { method: "POST", body: JSON.stringify({ kind: t.value }) });
+    await loadContacts(); await load(); return;
+  }
   if (t.classList.contains("status")) {                      // stage dropdown in the row
     const id = +t.dataset.cid, c = contacts.find(x => x.id === id), body = { stage: t.value };
     if (t.value === "Chatted" && !c.chat_date) body.chat_date = todayIso();                // starts the thank-you nudge
@@ -649,6 +677,10 @@ $("#cRows").addEventListener("change", async e => {
 $("#cRows").addEventListener("click", async e => {
   const b = e.target.closest("[data-cact]"); if (!b) return;
   const id = +b.closest("[data-cid]").dataset.cid;
+  if (b.dataset.cact === "ignore") {
+    if (!confirm("Ignore this person? They’ll be removed and won’t be added from LinkedIn again.")) return;
+    await api(`/api/contacts/${id}/ignore`, { method: "POST" }); openCid = null; await loadContacts(); await load(); return;
+  }
   if (b.dataset.cact === "followed") await api(`/api/contacts/${id}/followed-up`, { method: "POST" });
   if (b.dataset.cact === "snooze") await api(`/api/contacts/${id}/snooze?days=7`, { method: "POST" });
   if (b.dataset.cact === "delete") {

@@ -261,7 +261,8 @@ def stats():
             "response_rate": round(responded / total, 3) if total else 0,
             "follow_up": sum(a["follow_up_due"] for a in apps),
             "deadline_soon": sum(1 for a in apps if a["deadline_days"] is not None and a["deadline_days"] <= 3),
-            "contacts": len(people), "contacts_due": sum(c["follow_up_due"] for c in people)}
+            "contacts": len(people), "contacts_due": sum(c["follow_up_due"] for c in people),
+            "contacts_to_sort": sum(1 for c in people if c["needs_triage"])}
 
 
 @app.post("/api/sync")

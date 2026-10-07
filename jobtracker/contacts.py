@@ -119,6 +119,44 @@ def delete_contact(contact_id: int):
         conn.execute("DELETE FROM contacts WHERE id=?", (contact_id,))
 
 
+class KeepRequest(BaseModel):
+    kind: str | None = None
+
+
+@router.post("/{contact_id}/keep")
+def keep_contact(contact_id: int, body: KeepRequest):
+    """Sort an auto-added person into your contacts (optionally choosing their kind): reminders switch on."""
+    _validate({"kind": body.kind})
+    with db.session() as conn:
+        cur = conn.execute("UPDATE contacts SET needs_triage=0, kind=COALESCE(?, kind) WHERE id=?", (body.kind, contact_id))
+        if not cur.rowcount:
+            raise HTTPException(404)
+        _sync_application(conn, contact_id)
+    return {"ok": True}
+
+
+@router.post("/{contact_id}/ignore")
+def ignore_contact(contact_id: int):
+    """Not someone to track: remove them and never auto-add them again."""
+    from . import outreach
+    with db.session() as conn:
+        c = conn.execute("SELECT name, ext_key FROM contacts WHERE id=?", (contact_id,)).fetchone()
+        if not c:
+            raise HTTPException(404)
+        conn.execute("INSERT INTO ignored_people (slug, name_key) VALUES (?,?)",
+                     (c["ext_key"], "" if c["ext_key"] else outreach.norm_name(c["name"])))
+        conn.execute("DELETE FROM contacts WHERE id=?", (contact_id,))
+    return {"ok": True}
+
+
+@router.post("/triage/keep-all")
+def keep_all(body: KeepRequest):
+    _validate({"kind": body.kind})
+    with db.session() as conn:
+        n = conn.execute("UPDATE contacts SET needs_triage=0, kind=COALESCE(?, kind) WHERE needs_triage=1", (body.kind,)).rowcount
+    return {"kept": n}
+
+
 @router.post("/{contact_id}/followed-up")
 def followed_up(contact_id: int):
     """You've been in touch: restart the clock and clear the reminder date."""

@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS contacts (
     responded_at TEXT,                        -- when they last responded (accepted / replied)
     response_kind TEXT NOT NULL DEFAULT '',   -- 'Accepted invite' / 'Replied'
     response_logged_at TEXT,                  -- when the tracker noticed (drives the digest)
+    needs_triage INTEGER NOT NULL DEFAULT 0,  -- auto-added from LinkedIn: the user hasn't sorted it yet (no reminders until kept)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- LinkedIn people the user chose to ignore; never auto-added again
+CREATE TABLE IF NOT EXISTS ignored_people (
+    slug TEXT NOT NULL DEFAULT '',
+    name_key TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -115,10 +123,17 @@ def init_db():
         have_c = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
         added_c = {"channel": "TEXT NOT NULL DEFAULT ''", "source": "TEXT NOT NULL DEFAULT 'manual'", "ext_key": "TEXT NOT NULL DEFAULT ''",
                    "outreach_sent_at": "TEXT", "responded_at": "TEXT", "response_kind": "TEXT NOT NULL DEFAULT ''",
-                   "response_logged_at": "TEXT"}
+                   "response_logged_at": "TEXT", "needs_triage": "INTEGER NOT NULL DEFAULT 0"}
         for col, ddl in added_c.items():
             if col not in have_c:
                 conn.execute(f"ALTER TABLE contacts ADD COLUMN {col} {ddl}")
+        # one-time: people auto-added from LinkedIn before sorting existed go to "To sort" (only those never touched)
+        if not conn.execute("SELECT 1 FROM meta WHERE key='triage_v1'").fetchone():
+            conn.execute("""UPDATE contacts SET needs_triage=1
+                            WHERE source IN ('linkedin-email','linkedin-import') AND stage IN ('Replied','Reached out')
+                              AND notes='' AND application_id IS NULL AND remind_on IS NULL AND chat_date IS NULL
+                              AND last_contacted_at IS NULL AND kind='Cold outreach'""")
+            conn.execute("INSERT INTO meta (key, value) VALUES ('triage_v1', '1')")
 
 
 _SUFFIXES = r"\b(inc|llc|ltd|corp|corporation|co|company|group|technologies|technology|holdings|services|people|labs|careers|the)\b"

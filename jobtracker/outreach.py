@@ -56,6 +56,18 @@ def find_contact(conn, name: str, slug: str = ""):
     return None
 
 
+def is_ignored(conn, name: str, slug: str = "") -> bool:
+    full = norm_name(display_name(name, slug))
+    for r in conn.execute("SELECT slug, name_key FROM ignored_people"):
+        if (slug and r["slug"] == slug) or (not r["slug"] and r["name_key"] and r["name_key"] == full and " " in full):
+            return True
+    return False
+
+
+def _needs_triage(source: str) -> int:
+    return int(source in ("linkedin-email", "linkedin-import"))      # sorted by the user; sheet imports and manual adds are not
+
+
 def _earlier(a: str | None, b: str | None) -> str | None:
     return min((x for x in (a, b) if x), default=None)
 
@@ -71,10 +83,12 @@ def record_outreach(conn, *, name: str, slug: str = "", sent_at: str | None = No
     sent_at = sent_at[:10] if sent_at else None
     c = find_contact(conn, name, slug)
     if c is None:
+        if is_ignored(conn, name, slug):
+            return 0, False
         cur = conn.execute(
-            """INSERT INTO contacts (name, company, title, kind, stage, link, notes, channel, source, ext_key, outreach_sent_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (display_name(name, slug), company, title, kind, "Reached out", link, notes, channel, source, slug, sent_at))
+            """INSERT INTO contacts (name, company, title, kind, stage, link, notes, channel, source, ext_key, outreach_sent_at, needs_triage)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (display_name(name, slug), company, title, kind, "Reached out", link, notes, channel, source, slug, sent_at, _needs_triage(source)))
         return cur.lastrowid, True
     conn.execute(
         """UPDATE contacts SET
@@ -102,13 +116,14 @@ def record_response(conn, *, name: str, slug: str = "", when: str | None = None,
     fresh = (datetime.now(timezone.utc).date() - datetime.strptime(when, "%Y-%m-%d").date()).days <= 3
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if fresh else None
     if c is None:
-        if not create_missing:
+        if not create_missing or is_ignored(conn, name, slug):
             return None, "ignored"
         cur = conn.execute(
             """INSERT INTO contacts (name, company, title, kind, stage, link, channel, source, ext_key,
-                                     responded_at, response_kind, response_logged_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (display_name(name, slug), company, title, "Cold outreach", "Replied", link, "LinkedIn", source, slug, when, kind, now))
+                                     responded_at, response_kind, response_logged_at, needs_triage)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (display_name(name, slug), company, title, "Cold outreach", "Replied", link, "LinkedIn", source, slug, when, kind, now,
+             _needs_triage(source)))
         return cur.lastrowid, "created"
     better = display_name(name, slug)
     upgrade = better if (" " in better and " " not in c["name"] and norm_name(c["name"]) == norm_name(better).split(" ")[0]) else c["name"]

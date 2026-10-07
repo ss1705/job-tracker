@@ -47,9 +47,13 @@ application (linking one turns on that application's follow-up reminders). Remin
 ### LinkedIn outreach (only people *you* reach out to)
 
 - **Responses, automatically:** each sync reads LinkedIn's notification emails. "*X accepted your invitation*" and
-  "*X just messaged you*" update the matching contact (stage → *Replied*, with the date and kind). An accepted invite from
-  someone not yet tracked is added, since only someone you invited can accept. Incoming connection requests and
-  messages from people you never contacted are ignored. People are matched by profile link, never by a bare first name.
+  "*X just messaged you*" update the matching contact (stage → *Replied*, with the date and kind). Incoming connection
+  requests and messages from people you never contacted are ignored. People are matched by profile link, never by a bare
+  first name.
+- **You decide who counts:** not everyone you invite is outreach (friends, colleagues, classmates). People auto-added from
+  LinkedIn (and from the LinkedIn export import) land in **To sort**: choose a kind (Cold outreach, Coffee chat, Referral,
+  Recruiter, Alum, Friend / colleague, Other) to keep them, or **Ignore** to remove them for good. Unsorted people get no
+  reminders and appear in the digest only as an "N to sort" line. Kept people still update automatically.
 - **Your sent outreach:** LinkedIn doesn't email you when you send an invite or message, so use **Import…** on the
   Contacts tab: LinkedIn's data export (`Invitations.csv`, `messages.csv`, `Connections.csv`) or your old spreadsheet (CSV).
   Imports preview first and are idempotent. Only outreach you initiated is imported.

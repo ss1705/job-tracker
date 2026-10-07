@@ -196,6 +196,8 @@ def apply_plan(conn, plan: dict, source: str) -> dict:
             conn, name=p["name"], slug=p["slug"], sent_at=p["sent_at"], company=p["company"], title=p["title"], link=p["link"],
             notes=p["notes"], source=source, channel=p.get("channel") or ("LinkedIn" if source == "linkedin-import" else ""),
             kind=p.get("contact_kind", "Cold outreach"))
+        if not cid:                      # on your ignore list
+            continue
         created += was_created
         updated += not was_created
         if p.get("responded_at"):

@@ -115,3 +115,49 @@ def test_contact_reach_out_rules():
     assert f(stage="Referred", remind_on="2026-10-01")              # but a reminder you set after a referral counts
     assert not f(stage="Referred")
     assert f(stage="To reach out", remind_on="2026-10-19")
+
+
+def test_linkedin_people_land_in_to_sort_until_kept_or_ignored(client):
+    c, db, sync = client
+    from jobtracker import outreach
+    with db.session() as conn:
+        outreach.record_response(conn, name="Friend Person", slug="friend-person-1", when="2026-09-01", kind="Accepted invite",
+                                 create_missing=True, source="linkedin-email")
+        outreach.record_response(conn, name="Recruiter Rita", slug="recruiter-rita-2", when="2026-09-02", kind="Accepted invite",
+                                 create_missing=True, source="linkedin-email")
+        outreach.record_outreach(conn, name="Manual Mike", sent_at="2026-09-03", source="manual")           # typed in by hand: not unsorted
+    people = {p["name"]: p for p in c.get("/api/contacts").json()}
+    assert people["Friend Person"]["needs_triage"] == 1 and people["Manual Mike"]["needs_triage"] == 0
+    assert c.get("/api/stats").json()["contacts_to_sort"] == 2
+
+    # unsorted people never nag, even when overdue
+    assert not people["Friend Person"]["follow_up_due"]
+
+    fid, rid = people["Friend Person"]["id"], people["Recruiter Rita"]["id"]
+    assert c.post(f"/api/contacts/{fid}/keep", json={"kind": "Friend / colleague"}).status_code == 200
+    assert c.post(f"/api/contacts/{fid}/keep", json={"kind": "Nonsense"}).status_code == 422
+    kept = {p["name"]: p for p in c.get("/api/contacts").json()}["Friend Person"]
+    assert (kept["needs_triage"], kept["kind"]) == (0, "Friend / colleague")
+
+    # ignoring removes the contact and a later accepted-invite notice does not bring them back
+    assert c.post(f"/api/contacts/{rid}/ignore").status_code == 200
+    with db.session() as conn:
+        assert outreach.record_response(conn, name="Recruiter Rita", slug="recruiter-rita-2", when="2026-09-20",
+                                        kind="Accepted invite", create_missing=True) == (None, "ignored")
+        assert outreach.record_outreach(conn, name="Recruiter Rita", slug="recruiter-rita-2", source="linkedin-import")[0] == 0
+    assert "Recruiter Rita" not in {p["name"] for p in c.get("/api/contacts").json()}
+
+    # kept people still get response updates automatically
+    with db.session() as conn:
+        assert outreach.record_response(conn, name="Friend Person", slug="friend-person-1", when="2026-09-25", kind="Replied")[1] == "updated"
+
+
+def test_existing_unedited_linkedin_contacts_are_flagged_once(client):
+    c, db, sync = client
+    with db.session() as conn:
+        conn.execute("INSERT INTO contacts (name, stage, kind, source) VALUES ('Auto Person', 'Replied', 'Cold outreach', 'linkedin-email')")
+        conn.execute("INSERT INTO contacts (name, stage, kind, source, notes) VALUES ('Edited Person', 'Replied', 'Cold outreach', 'linkedin-email', 'met at event')")
+        conn.execute("DELETE FROM meta WHERE key='triage_v1'")
+    db.init_db()                                                   # the migration runs on startup
+    flags = {r["name"]: r["needs_triage"] for r in c.get("/api/contacts").json()}
+    assert flags == {"Auto Person": 1, "Edited Person": 0}
