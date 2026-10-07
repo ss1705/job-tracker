@@ -1,9 +1,10 @@
 """Follow-up reminders and saved-posting deadlines (pure functions, easy to test).
 
-Reminders fire for:
+Cold applications (no contact) never get automatic reminders: there's nobody to follow up with.
+For applications with a contact (referral / coffee chat / recruiter), reminders fire for:
   * Applied with no response after FOLLOWUP_DAYS, until FOLLOWUP_MAX_DAYS (after that: ghosted, stop nagging)
   * OA / Interview with no new email for CHECKIN_DAYS
-  * any non-final application whose manual reminder date has arrived
+Any non-final application also reminds on its manual "remind me on" date.
 Clicking "Followed up" resets the clock; a future reminder date snoozes the automatic ones.
 """
 from datetime import date
@@ -33,6 +34,9 @@ def flags(app: dict, has_response: bool, last_event_local: str | None, today: da
         if remind <= today:
             out.update(follow_up_due=True, follow_up_reason=f"Reminder set for {remind:%b} {remind.day}")
         return out          # a set reminder date (future = snoozed) overrides the automatic rules
+
+    if not app.get("contact_type"):
+        return out          # cold application: only a manual reminder date can flag it (handled above)
 
     if status == "Applied" and not has_response and applied:
         ref = max(applied, followed) if followed else applied

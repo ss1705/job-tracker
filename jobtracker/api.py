@@ -39,6 +39,8 @@ class NewApplication(BaseModel):
     applied_at: str | None = None
     deadline: str | None = None
     follow_up_at: str | None = None
+    contact_type: str = ""
+    contact_name: str = ""
 
 
 class Patch(BaseModel):
@@ -52,12 +54,24 @@ class Patch(BaseModel):
     applied_at: str | None = None
     deadline: str | None = None
     follow_up_at: str | None = None
+    contact_type: str | None = None
+    contact_name: str | None = None
     needs_review: bool | None = None
+
+
+class SplitRequest(BaseModel):
+    event_ids: list[int] = Field(min_length=1)
+    role: str = ""
 
 
 class SyncRequest(BaseModel):
     since: date | None = None
     until: date | None = None
+
+
+def _check_contact(t: str):
+    if t and t not in config.CONTACT_TYPES:
+        raise HTTPException(422, f"contact_type must be empty or one of {config.CONTACT_TYPES}")
 
 
 def _check_status(s: str):
@@ -97,16 +111,17 @@ def list_applications():
 @app.post("/api/applications", status_code=201)
 def create_application(body: NewApplication):
     _check_status(body.status)
+    _check_contact(body.contact_type)
     with db.session() as conn:
         cur = conn.execute(
             """INSERT INTO applications
                (company, company_key, role, job_type, location, link, notes, source, status, status_locked, applied_at,
-                deadline, follow_up_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                deadline, follow_up_at, contact_type, contact_name)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (body.company.strip(), db.company_key(body.company), body.role, body.job_type, body.location,
              body.link, body.notes, "Manual", body.status,
              0 if body.status == "Saved" else 1,    # a saved posting should advance when its confirmation email arrives
-             body.applied_at, body.deadline or None, body.follow_up_at or None),
+             body.applied_at, body.deadline or None, body.follow_up_at or None, body.contact_type, body.contact_name.strip()),
         )
         return {"id": cur.lastrowid}
 
@@ -114,6 +129,8 @@ def create_application(body: NewApplication):
 @app.patch("/api/applications/{app_id}")
 def update_application(app_id: int, body: Patch):
     fields = body.model_dump(exclude_unset=True)
+    if "contact_type" in fields:
+        _check_contact(fields["contact_type"])
     for k in ("deadline", "follow_up_at", "applied_at"):
         if k in fields and not fields[k]:
             fields[k] = None
@@ -137,6 +154,17 @@ def update_application(app_id: int, body: Patch):
         if not cur.rowcount:
             raise HTTPException(404)
     return {"ok": True}
+
+
+@app.post("/api/applications/{app_id}/split")
+def split_application(app_id: int, body: SplitRequest):
+    """Un-merge: move some of an application's emails into a new application at the same company."""
+    with db.session() as conn:
+        try:
+            new_id = sync.split_events(conn, app_id, body.event_ids, body.role.strip())
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+    return {"new_id": new_id}
 
 
 @app.post("/api/applications/{app_id}/followed-up")
@@ -202,7 +230,7 @@ def unblock(pattern: str):
 def application_events(app_id: int):
     with db.session() as conn:
         rows = conn.execute(
-            "SELECT type, received_at, subject, sender, snippet FROM events WHERE application_id=? ORDER BY received_at",
+            "SELECT id, type, received_at, subject, sender, snippet FROM events WHERE application_id=? ORDER BY received_at",
             (app_id,),
         ).fetchall()
     return [dict(r) for r in rows]

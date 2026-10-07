@@ -98,6 +98,9 @@
   .badge.late { background: color-mix(in srgb, var(--Rejected) 16%, transparent); color: var(--Rejected); }
   .chip.due { background: color-mix(in srgb, var(--Interview) 14%, var(--surface)); border-color: transparent; color: var(--Interview); }
   .field input, .field select { color: var(--text); }
+  button.link { background: none; border: 0; padding: 2px 0; margin-top: 4px; color: var(--accent); font-size: 12px; cursor: pointer; }
+  button.link:hover { text-decoration: underline; }
+  .badge.contact { background: var(--surface-2); color: var(--muted); }
   .dash { color: var(--muted); opacity: .6; }
   .type-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
 
@@ -198,6 +201,8 @@
     <label>Status<select name="status"></select></label>
     <label>Applied on<input name="applied_at" type="date"></label>
     <label>Deadline <span style="opacity:.7">(for saved postings)</span><input name="deadline" type="date"></label>
+    <label>Contact <span style="opacity:.7">(enables follow-up reminders)</span><select name="contact_type"><option value="">None (cold application)</option><option>Referral</option><option>Coffee chat</option><option>Recruiter</option></select></label>
+    <label>Contact name<input name="contact_name" placeholder="e.g. Priya (ex-colleague)"></label>
     <label>Link<input name="link" type="url" placeholder="https://…"></label>
     <div class="actions">
       <button value="cancel" formnovalidate>Cancel</button>
@@ -274,7 +279,7 @@ function renderRows() {
   $("#empty").hidden = apps.length > 0;
   $("#rows").innerHTML = list.map(a => `
     <tr class="app ${a.id === openId ? "open" : ""}" data-id="${a.id}">
-      <td class="company">${esc(a.company)}${a.needs_review ? '<span class="badge warn">review</span>' : ""}${a.follow_up_due ? `<span class="badge due" title="${esc(a.follow_up_reason)}">follow up</span>` : ""}${deadlineBadge(a)}</td>
+      <td class="company">${esc(a.company)}${a.needs_review ? '<span class="badge warn">review</span>' : ""}${a.contact_type ? `<span class="badge contact" title="${esc(a.contact_name || a.contact_type)}">${esc(a.contact_type.toLowerCase())}</span>` : ""}${a.follow_up_due ? `<span class="badge due" title="${esc(a.follow_up_reason)}">follow up</span>` : ""}${deadlineBadge(a)}</td>
       <td class="role">${esc(a.role) || DASH}</td>
       <td>${a.job_type ? `<span class="type-tag">${esc(a.job_type)}</span>` : DASH}</td>
       <td><select class="status" aria-label="Status" data-id="${a.id}" style="--c:var(--${a.status})">
@@ -295,13 +300,16 @@ async function loadDetail(id) {
       <ul class="timeline">${ev.length ? ev.map(e => `<li style="--c:var(--${STATUSES.includes(e.type) ? e.type : "Saved"})">
         <b>${esc(e.type)}</b> <span class="muted">· ${fmt(e.received_at)}</span>
         <div class="subj">${esc(e.subject)}</div>
-        <div class="snip">${esc(e.snippet.slice(0, 160))}</div></li>`).join("") : '<li class="muted">No emails linked (manual entry).</li>'}</ul></div>
+        <div class="snip">${esc(e.snippet.slice(0, 160))}</div>
+        ${ev.length > 1 ? `<button class="link" data-act="split" data-event="${e.id}" title="This email was about a different job: move it to its own application">Move to a new application</button>` : ""}</li>`).join("") : '<li class="muted">No emails linked (manual entry).</li>'}</ul></div>
     <div><h4>Details</h4>
       <div class="form-grid">
         <input data-k="company" value="${esc(a.company)}" placeholder="Company" aria-label="Company">
         <input data-k="role" value="${esc(a.role)}" placeholder="Role" aria-label="Role">
         <input data-k="link" value="${esc(a.link)}" placeholder="Job link" aria-label="Job link">
         <select data-k="job_type" aria-label="Type">${[["", "No type"], ["Co-op"], ["New Grad"], ["Internship"], ["Full-time"]].map(([t, l]) => `<option value="${t}" ${t === a.job_type ? "selected" : ""}>${l || t}</option>`).join("")}</select>
+        <label class="field">Contact<select data-k="contact_type" title="A referral, coffee chat or recruiter enables follow-up reminders">${[["", "None (cold application)"], ["Referral"], ["Coffee chat"], ["Recruiter"]].map(([t, l]) => `<option value="${t}" ${t === a.contact_type ? "selected" : ""}>${l || t}</option>`).join("")}</select></label>
+        <label class="field">Contact name<input data-k="contact_name" value="${esc(a.contact_name)}" placeholder="e.g. Priya (ex-colleague)"></label>
         <label class="field">Deadline<input type="date" data-k="deadline" value="${esc((a.deadline || "").slice(0, 10))}"></label>
         <label class="field">Remind me on<input type="date" data-k="follow_up_at" value="${esc((a.follow_up_at || "").slice(0, 10))}"></label>
         <textarea class="wide" data-k="notes" placeholder="Notes (recruiter, referral, follow-up date…)" aria-label="Notes">${esc(a.notes)}</textarea>
@@ -309,7 +317,7 @@ async function loadDetail(id) {
       ${a.follow_up_due ? `<div class="sync-note" style="margin-top:10px"><b>${esc(a.follow_up_reason)}.</b></div>` : ""}
       <div class="actions">
         ${a.status === "Saved" ? '<button class="primary" data-act="applied">Mark applied</button>' : ""}
-        ${a.follow_up_due || a.status === "Applied" || a.status === "OA" || a.status === "Interview" ? '<button data-act="followed">Followed up</button><button data-act="snooze">Snooze 1 week</button>' : ""}
+        ${a.follow_up_due || a.contact_type || a.follow_up_at ? '<button data-act="followed">Followed up</button><button data-act="snooze">Snooze 1 week</button>' : ""}
         ${a.needs_review ? '<button data-act="reviewed">Mark reviewed</button>' : ""}
         <span class="spacer"></span>
         <button class="danger" data-act="block" title="Delete this application and ignore future emails from its sender's domain">Delete &amp; block sender</button>
@@ -338,7 +346,7 @@ $("#rows").addEventListener("change", async e => {
     const id = +row.querySelector("td").id.replace("detail-", "");
     await api(`/api/applications/${id}`, { method: "PATCH", body: JSON.stringify({ [t.dataset.k]: t.value }) });
     const a = apps.find(x => x.id === id); a[t.dataset.k] = t.value;
-    if (["deadline", "follow_up_at"].includes(t.dataset.k)) await load(); else if (["company", "role", "job_type"].includes(t.dataset.k)) renderRows();
+    if (["deadline", "follow_up_at", "contact_type"].includes(t.dataset.k)) await load(); else if (["company", "role", "job_type"].includes(t.dataset.k)) renderRows();
   }
 });
 $("#rows").addEventListener("click", async e => {
@@ -353,6 +361,12 @@ $("#rows").addEventListener("click", async e => {
       ? `Delete this application and ignore future emails from:\n\n  ${pv.will_block.join("\n  ")}\n\nYou can undo the block from "Blocked senders" at the bottom.`
       : "Delete this application? (Its sender is a shared service like Greenhouse/Workday, so nothing will be blocked.)";
     if (confirm(msg)) { await api(`/api/applications/${id}/delete-and-block`, { method: "POST" }); openId = null; await load(); loadBlocked(); }
+  }
+  if (b.dataset.act === "split") {
+    const role = prompt("This email is about a different job. What's the role for the new application? (you can leave it blank and fill it in later)");
+    if (role === null) return;
+    const r = await api(`/api/applications/${id}/split`, { method: "POST", body: JSON.stringify({ event_ids: [+b.dataset.event], role }) });
+    openId = r.new_id; await load();
   }
   if (b.dataset.act === "applied") { await api(`/api/applications/${id}`, { method: "PATCH", body: JSON.stringify({ status: "Applied" }) }); await load(); }
   if (b.dataset.act === "followed") { await api(`/api/applications/${id}/followed-up`, { method: "POST" }); await load(); }

@@ -258,7 +258,9 @@ def guess_job_type(*texts: str) -> str:
     t = " ".join(texts).lower()
     if re.search(r"\bco-?op\b", t):
         return "Co-op"
-    if re.search(r"new[- ]?grad|new graduate|university grad|early career|recent grad", t):
+    if re.search(r"new[- ]?grad|new graduate|university grad|early career|recent grad|"
+                 r"graduate (software|developer|engineer|programme|program|scheme|analyst|systems|technology)|"
+                 r"graduate .{0,25}engineer", t):
         return "New Grad"
     if re.search(r"\bintern(ship)?\b", t):
         return "Internship"

@@ -126,10 +126,12 @@ def test_follow_up_rules():
     from datetime import date
     from jobtracker import followups
     today = date(2026, 10, 20)
-    app = lambda **kw: {"status": "Applied", "applied_at": "2026-10-01", "followed_up_at": None, "follow_up_at": None, "deadline": None, **kw}
+    app = lambda **kw: {"status": "Applied", "applied_at": "2026-10-01", "followed_up_at": None, "follow_up_at": None, "deadline": None, "contact_type": "Referral", **kw}
     f = lambda a, resp=False, last=None: followups.flags(a, resp, last, today)
 
-    assert f(app())["follow_up_due"]                                    # 19 days, no response
+    assert f(app())["follow_up_due"]                                    # referral: 19 days, no response
+    assert not f(app(contact_type=""))["follow_up_due"]                 # cold application: nobody to follow up with
+    assert f(app(contact_type="", follow_up_at="2026-10-19"))["follow_up_due"]   # ...unless you set a reminder yourself
     assert not f(app(applied_at="2026-10-15"))["follow_up_due"]         # only 5 days
     assert not f(app(applied_at="2026-08-01"))["follow_up_due"]         # 80 days: ghosted, stop nagging
     assert not f(app(), resp=True)["follow_up_due"]                     # got some response
@@ -142,3 +144,26 @@ def test_follow_up_rules():
     assert not f(app(status="Rejected", follow_up_at="2026-10-01"))["follow_up_due"]   # final states never nag
     assert f(app(status="Saved", deadline="2026-10-22", applied_at=None))["deadline_days"] == 2
     assert f(app(status="Saved", deadline="2026-10-18", applied_at=None))["deadline_days"] == -2
+
+
+def test_roleless_receipts_on_different_days_stay_separate_and_can_be_split(env):
+    db, sync = env
+    from jobtracker.parser import Parsed
+    hpe = "Hewlett Packard Enterprise <hpe@myworkday.com>"
+    p = Parsed(is_job=True, company="Hewlett Packard Enterprise", status="Applied")
+    with db.session() as c:
+        sync.apply_parsed(c, msg("a", "Thank you for your online submission", hpe, "x", "2026-09-15T14:00:00"), p)
+        sync.apply_parsed(c, msg("b", "Thank you for your online submission", hpe, "x", "2026-09-15T14:02:00"), p)   # same day duplicate
+        sync.apply_parsed(c, msg("c", "Thank you for your online submission", hpe, "x", "2026-10-07T03:04:00"), p)   # different day
+    with db.session() as c:
+        rows = c.execute("SELECT id, needs_review, (SELECT COUNT(*) FROM events e WHERE e.application_id=a.id) n FROM applications a ORDER BY id").fetchall()
+    assert [(r["needs_review"], r["n"]) for r in rows] == [(0, 2), (1, 1)]     # duplicate merged; later day flagged separately
+
+    # manual un-merge of an existing merged record
+    with db.session() as c:
+        app_id = rows[0]["id"]
+        ev = c.execute("SELECT id FROM events WHERE application_id=? ORDER BY received_at DESC", (app_id,)).fetchone()["id"]
+        new_id = sync.split_events(c, app_id, [ev], "AI Engineer Graduate")
+        assert new_id not in (rows[0]["id"], rows[1]["id"])
+        with pytest.raises(ValueError):
+            sync.split_events(c, new_id, [c.execute("SELECT id FROM events WHERE application_id=?", (new_id,)).fetchone()["id"]])  # can't empty it

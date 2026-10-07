@@ -31,9 +31,11 @@ Rows the parser wasn't sure about are marked **review**. Editing a status by han
 
 - **Saved postings:** add one with status *Saved* and a deadline. It shows "due in 3d" / "overdue" badges and a
   **Mark applied** button. When the confirmation email arrives it attaches to the same row.
-- **Reminders:** flagged under the **Follow up** chip: Applied with no response after `FOLLOWUP_DAYS` (14), until
-  `FOLLOWUP_MAX_DAYS` (30, after that it counts as ghosted); OA/Interview silent for `CHECKIN_DAYS` (7); or a
-  "Remind me on" date you set. **Followed up** restarts the clock, **Snooze 1 week** delays it.
+- **Reminders (only where there's someone to follow up with):** set an application's **Contact** to Referral, Coffee
+  chat or Recruiter (+ a name). Those get flagged under the **Follow up** chip when there's been no news for
+  `FOLLOWUP_DAYS` (7) after applying (until `FOLLOWUP_MAX_DAYS`, 30), or `CHECKIN_DAYS` (7) after an OA/interview.
+  Cold applications never get automatic reminders, but any application can have a manual "Remind me on" date.
+  **Followed up** restarts the clock, **Snooze 1 week** delays it.
 
 ## Auto-sync
 

@@ -49,7 +49,10 @@ def test_followed_up_and_snooze(client):
     c, db, sync = client
     old = (date.today() - timedelta(days=20)).isoformat()
     app_id = c.post("/api/applications", json={"company": "Beta", "role": "SWE", "status": "Applied", "applied_at": old}).json()["id"]
-    assert c.get("/api/applications").json()[0]["follow_up_due"]
+    assert not c.get("/api/applications").json()[0]["follow_up_due"]      # cold application: no automatic reminder
+    c.patch(f"/api/applications/{app_id}", json={"contact_type": "Referral", "contact_name": "Priya"})
+    assert c.get("/api/applications").json()[0]["follow_up_due"]          # with a referral it is flagged
+    assert c.patch(f"/api/applications/{app_id}", json={"contact_type": "Nonsense"}).status_code == 422
     assert c.get("/api/stats").json()["follow_up"] == 1
 
     c.post(f"/api/applications/{app_id}/followed-up")

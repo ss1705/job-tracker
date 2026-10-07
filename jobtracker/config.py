@@ -22,7 +22,8 @@ TIMEZONE = os.getenv("TIMEZONE", "")
 # background sync while the server is running (0 disables)
 AUTO_SYNC_MINUTES = int(os.getenv("AUTO_SYNC_MINUTES", "120"))
 AUTO_SYNC_LOOKBACK_DAYS = int(os.getenv("AUTO_SYNC_LOOKBACK_DAYS", "3"))
-# follow-up reminders (see followups.py)
-FOLLOWUP_DAYS = int(os.getenv("FOLLOWUP_DAYS", "14"))
+# follow-up reminders: only for applications with a contact (referral / coffee chat / recruiter); see followups.py
+FOLLOWUP_DAYS = int(os.getenv("FOLLOWUP_DAYS", "7"))
 FOLLOWUP_MAX_DAYS = int(os.getenv("FOLLOWUP_MAX_DAYS", "30"))
 CHECKIN_DAYS = int(os.getenv("CHECKIN_DAYS", "7"))
+CONTACT_TYPES = ["Referral", "Coffee chat", "Recruiter"]

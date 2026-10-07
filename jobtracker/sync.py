@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from datetime import date
 
 from . import config, db, gmail
-from .parser import LLMExhausted, Parsed, parse_email
+from .parser import LLMExhausted, Parsed, is_receipt_subject, parse_email
 
 # lifecycle ranking used to decide the "current" status of an application
 _ORDER = {"Saved": 0, "Applied": 1, "OA": 2, "Interview": 3, "Offer": 4}
@@ -58,12 +58,22 @@ def apply_parsed(conn, msg: dict, p: Parsed) -> str:
     app, confident = db.find_application(conn, p.company, p.role, p.req_id, is_applied)
     review = int(not confident or not p.status)
 
+    # A role-less receipt on a different day than an earlier receipt at the same company may be a *different*
+    # job (generic ATS confirmations don't name the role). Don't silently merge: make a new row, flag it.
+    force_new = False
+    if app is not None and is_applied and not p.role and is_receipt_subject(msg["subject"]):
+        mine = local_date(msg["received_at"])
+        earlier = conn.execute(
+            "SELECT received_at, subject FROM events WHERE application_id=? AND type='Applied'", (app["id"],)).fetchall()
+        if any(is_receipt_subject(e["subject"]) and local_date(e["received_at"]) != mine for e in earlier):
+            force_new, app, review = True, None, 1
+
     if app is None:
         cur = conn.execute(
             """INSERT INTO applications (company, company_key, role, req_id, job_type, source, status, needs_review)
                VALUES (?,?,?,?,?,?,?,?)""",
             (p.company, db.company_key(p.company), p.role, p.req_id, p.job_type, "Email",
-             p.status or "Applied", int(not p.status)),
+             p.status or "Applied", int(not p.status or force_new)),
         )
         app_id = cur.lastrowid
     else:
@@ -86,6 +96,26 @@ def apply_parsed(conn, msg: dict, p: Parsed) -> str:
     )
     recompute(conn, app_id)
     return "needs_review" if review else "linked"
+
+
+def split_events(conn, app_id: int, event_ids: list[int], role: str = "") -> int:
+    """Move the given emails out of an application into a new one (same company). Returns the new id."""
+    app = conn.execute("SELECT * FROM applications WHERE id=?", (app_id,)).fetchone()
+    mine = {r["id"] for r in conn.execute("SELECT id FROM events WHERE application_id=?", (app_id,))}
+    ids = [i for i in event_ids if i in mine]
+    if not app or not ids:
+        raise ValueError("no matching emails to move")
+    if len(ids) >= len(mine):
+        raise ValueError("leave at least one email on the original application")
+    cur = conn.execute(
+        """INSERT INTO applications (company, company_key, role, job_type, location, source, link, status)
+           VALUES (?,?,?,?,?,?,?, 'Applied')""",
+        (app["company"], app["company_key"], role, app["job_type"], app["location"], app["source"], ""))
+    new_id = cur.lastrowid
+    conn.execute(f"UPDATE events SET application_id=? WHERE id IN ({','.join('?' * len(ids))})", (new_id, *ids))
+    recompute(conn, new_id)
+    recompute(conn, app_id)
+    return new_id
 
 
 # ---------------------------------------------------------------- orchestration
