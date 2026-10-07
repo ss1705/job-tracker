@@ -120,3 +120,25 @@ def test_auto_sync_schedule():
     assert not is_due({"at": ago(30), "error": "Groq quota"}, now, 120)   # back off after a failure
     assert is_due({"at": ago(61), "error": "Groq quota"}, now, 30)
     assert not is_due({"at": ago(9999)}, now, 0)                    # disabled
+
+
+def test_follow_up_rules():
+    from datetime import date
+    from jobtracker import followups
+    today = date(2026, 10, 20)
+    app = lambda **kw: {"status": "Applied", "applied_at": "2026-10-01", "followed_up_at": None, "follow_up_at": None, "deadline": None, **kw}
+    f = lambda a, resp=False, last=None: followups.flags(a, resp, last, today)
+
+    assert f(app())["follow_up_due"]                                    # 19 days, no response
+    assert not f(app(applied_at="2026-10-15"))["follow_up_due"]         # only 5 days
+    assert not f(app(applied_at="2026-08-01"))["follow_up_due"]         # 80 days: ghosted, stop nagging
+    assert not f(app(), resp=True)["follow_up_due"]                     # got some response
+    assert not f(app(followed_up_at="2026-10-18"))["follow_up_due"]     # just followed up: clock restarted
+    assert f(app(followed_up_at="2026-10-02"))["follow_up_due"]
+    assert not f(app(follow_up_at="2026-10-27"))["follow_up_due"]       # snoozed
+    assert f(app(follow_up_at="2026-10-19"))["follow_up_due"]           # manual reminder reached
+    assert f(app(status="Interview"), last="2026-10-10")["follow_up_due"]       # silent for 10 days
+    assert not f(app(status="Interview"), last="2026-10-18")["follow_up_due"]
+    assert not f(app(status="Rejected", follow_up_at="2026-10-01"))["follow_up_due"]   # final states never nag
+    assert f(app(status="Saved", deadline="2026-10-22", applied_at=None))["deadline_days"] == 2
+    assert f(app(status="Saved", deadline="2026-10-18", applied_at=None))["deadline_days"] == -2

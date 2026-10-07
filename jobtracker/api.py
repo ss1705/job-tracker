@@ -1,6 +1,7 @@
 import csv
 import io
 import threading
+from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -9,14 +10,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, db, gmail, parser, scheduler, sync
+from . import config, db, followups, gmail, parser, scheduler, sync
 
-app = FastAPI(title="Job Tracker")
-STATIC = Path(__file__).resolve().parent.parent / "static"
-
-
-@app.on_event("startup")
-def _startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     db.init_db()
     with db.session() as conn:   # one-time: applied dates were previously cut from UTC timestamps
         if not conn.execute("SELECT 1 FROM meta WHERE key='applied_at_local_v1'").fetchone():
@@ -24,6 +21,11 @@ def _startup():
                 sync.recompute(conn, app_id)
             conn.execute("INSERT INTO meta (key, value) VALUES ('applied_at_local_v1', '1')")
     scheduler.start()
+    yield
+
+
+app = FastAPI(title="Job Tracker", lifespan=lifespan)
+STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
 class NewApplication(BaseModel):
@@ -35,6 +37,8 @@ class NewApplication(BaseModel):
     link: str = ""
     notes: str = ""
     applied_at: str | None = None
+    deadline: str | None = None
+    follow_up_at: str | None = None
 
 
 class Patch(BaseModel):
@@ -46,6 +50,8 @@ class Patch(BaseModel):
     link: str | None = None
     notes: str | None = None
     applied_at: str | None = None
+    deadline: str | None = None
+    follow_up_at: str | None = None
     needs_review: bool | None = None
 
 
@@ -78,6 +84,13 @@ def list_applications():
                 dates = by_id[r["application_id"]]["applied_dates"]
                 if d not in dates:
                     dates.append(d)
+        responded = {r[0] for r in conn.execute(
+            "SELECT DISTINCT application_id FROM events WHERE type IN ('OA','Interview','Offer','Rejected')")}
+    today = date.today()
+    for a in apps:
+        last_local = sync.local_date(a["last_event_at"]) if a["last_event_at"] else None
+        latest = {**a, "applied_at": a["applied_dates"][-1] if a["applied_dates"] else a["applied_at"]}   # re-applying restarts the clock
+        a.update(followups.flags(latest, a["id"] in responded, last_local, today))
     return apps
 
 
@@ -87,10 +100,13 @@ def create_application(body: NewApplication):
     with db.session() as conn:
         cur = conn.execute(
             """INSERT INTO applications
-               (company, company_key, role, job_type, location, link, notes, source, status, status_locked, applied_at)
-               VALUES (?,?,?,?,?,?,?,?,?,1,?)""",
+               (company, company_key, role, job_type, location, link, notes, source, status, status_locked, applied_at,
+                deadline, follow_up_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (body.company.strip(), db.company_key(body.company), body.role, body.job_type, body.location,
-             body.link, body.notes, "Manual", body.status, body.applied_at),
+             body.link, body.notes, "Manual", body.status,
+             0 if body.status == "Saved" else 1,    # a saved posting should advance when its confirmation email arrives
+             body.applied_at, body.deadline or None, body.follow_up_at or None),
         )
         return {"id": cur.lastrowid}
 
@@ -98,9 +114,17 @@ def create_application(body: NewApplication):
 @app.patch("/api/applications/{app_id}")
 def update_application(app_id: int, body: Patch):
     fields = body.model_dump(exclude_unset=True)
+    for k in ("deadline", "follow_up_at", "applied_at"):
+        if k in fields and not fields[k]:
+            fields[k] = None
     if "status" in fields:
         _check_status(fields["status"])
-        fields["status_locked"] = 1   # user override: stop auto-changing status from email
+        with db.session() as conn:
+            n_events = conn.execute("SELECT COUNT(*) FROM events WHERE application_id=?", (app_id,)).fetchone()[0]
+        # user override stops email from changing the status, except moving an email-less row Saved -> Applied
+        fields["status_locked"] = 0 if (fields["status"] in ("Saved", "Applied") and n_events == 0) else 1
+        if fields["status"] == "Applied" and n_events == 0:
+            fields.setdefault("applied_at", date.today().isoformat())
     if "needs_review" in fields:
         fields["needs_review"] = int(fields["needs_review"])
     if "company" in fields:
@@ -113,6 +137,27 @@ def update_application(app_id: int, body: Patch):
         if not cur.rowcount:
             raise HTTPException(404)
     return {"ok": True}
+
+
+@app.post("/api/applications/{app_id}/followed-up")
+def followed_up(app_id: int):
+    """User chased the company: restart the no-response clock and clear any reminder date."""
+    with db.session() as conn:
+        cur = conn.execute("UPDATE applications SET followed_up_at=?, follow_up_at=NULL WHERE id=?",
+                           (date.today().isoformat(), app_id))
+        if not cur.rowcount:
+            raise HTTPException(404)
+    return {"ok": True}
+
+
+@app.post("/api/applications/{app_id}/snooze")
+def snooze(app_id: int, days: int = 7):
+    remind = (date.today() + timedelta(days=max(1, days))).isoformat()
+    with db.session() as conn:
+        cur = conn.execute("UPDATE applications SET follow_up_at=? WHERE id=?", (remind, app_id))
+        if not cur.rowcount:
+            raise HTTPException(404)
+    return {"follow_up_at": remind}
 
 
 @app.delete("/api/applications/{app_id}", status_code=204)
@@ -170,8 +215,11 @@ def stats():
         review = conn.execute("SELECT COUNT(*) FROM applications WHERE needs_review=1").fetchone()[0]
     total = sum(by_status.values())
     responded = sum(n for s, n in by_status.items() if s in ("OA", "Interview", "Offer", "Rejected"))
+    apps = list_applications()
     return {"total": total, "by_status": by_status, "needs_review": review,
-            "response_rate": round(responded / total, 3) if total else 0}
+            "response_rate": round(responded / total, 3) if total else 0,
+            "follow_up": sum(a["follow_up_due"] for a in apps),
+            "deadline_soon": sum(1 for a in apps if a["deadline_days"] is not None and a["deadline_days"] <= 3)}
 
 
 @app.post("/api/sync")
@@ -208,11 +256,11 @@ def last_sync():
 def export_csv():
     with db.session() as conn:
         rows = conn.execute(
-            "SELECT company, role, job_type, location, status, applied_at, last_event_at, source, link, notes FROM applications ORDER BY applied_at DESC"
+            "SELECT company, role, job_type, location, status, applied_at, last_event_at, deadline, follow_up_at, source, link, notes FROM applications ORDER BY applied_at DESC"
         ).fetchall()
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["company", "role", "type", "location", "status", "applied", "last_update", "source", "link", "notes"])
+    w.writerow(["company", "role", "type", "location", "status", "applied", "last_update", "deadline", "reminder", "source", "link", "notes"])
     w.writerows([tuple(r) for r in rows])
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",

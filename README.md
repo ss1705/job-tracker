@@ -27,6 +27,14 @@ save the JSON as `secrets/gmail_client.json`, then sign in once:
 Pick a date range in the UI and press **Sync**. Re-syncing is safe (messages are tracked by Gmail id).
 Rows the parser wasn't sure about are marked **review**. Editing a status by hand locks it against later auto-updates.
 
+## Follow-ups and saved postings
+
+- **Saved postings:** add one with status *Saved* and a deadline. It shows "due in 3d" / "overdue" badges and a
+  **Mark applied** button. When the confirmation email arrives it attaches to the same row.
+- **Reminders:** flagged under the **Follow up** chip: Applied with no response after `FOLLOWUP_DAYS` (14), until
+  `FOLLOWUP_MAX_DAYS` (30, after that it counts as ghosted); OA/Interview silent for `CHECKIN_DAYS` (7); or a
+  "Remind me on" date you set. **Followed up** restarts the clock, **Snooze 1 week** delays it.
+
 ## Auto-sync
 
 While the server runs it re-syncs Gmail every `AUTO_SYNC_MINUTES` (default 120; `0` turns it off), looking back

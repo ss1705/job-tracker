@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS applications (
     needs_review INTEGER NOT NULL DEFAULT 0,
     applied_at TEXT,                        -- ISO date
     last_event_at TEXT,
+    deadline TEXT,                          -- for Saved postings: apply-by date
+    follow_up_at TEXT,                      -- manual reminder date (a future date also snoozes auto reminders)
+    followed_up_at TEXT,                    -- last time the user marked 'followed up'
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_app_company ON applications(company_key);
@@ -77,6 +80,10 @@ def session():
 def init_db():
     with session() as conn:
         conn.executescript(SCHEMA)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(applications)")}
+        for col in ("deadline", "follow_up_at", "followed_up_at"):     # upgrade databases created before these existed
+            if col not in have:
+                conn.execute(f"ALTER TABLE applications ADD COLUMN {col} TEXT")
 
 
 _SUFFIXES = r"\b(inc|llc|ltd|corp|corporation|co|company|group|technologies|technology|holdings|services|people|labs|careers|the)\b"
