@@ -1,0 +1,188 @@
+"""Pull emails for a date range, parse them, and fold them into applications/events."""
+import json
+import threading
+import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from datetime import date
+
+from . import config, db, gmail
+from .parser import LLMExhausted, Parsed, parse_email
+
+# lifecycle ranking used to decide the "current" status of an application
+_ORDER = {"Saved": 0, "Applied": 1, "OA": 2, "Interview": 3, "Offer": 4}
+
+
+def derive_status(events: list[tuple[str, str]]) -> str:
+    """events: [(received_at, type)]. Offer is final. Otherwise the latest meaningful event wins, except:
+    a stray late 'Applied' receipt never downgrades progress, and once rejected, only a later
+    Interview/Offer reopens the application (late OA/reminder emails don't)."""
+    meaningful = sorted((e for e in events if e[1] in config.STATUSES), key=lambda e: e[0])
+    if not meaningful:
+        return "Applied"
+    if any(t == "Offer" for _, t in meaningful):
+        return "Offer"
+    rejected_at = max((ts for ts, t in meaningful if t == "Rejected"), default=None)
+    if rejected_at:
+        reopened = [t for ts, t in meaningful if ts > rejected_at and t == "Interview"]
+        if not reopened:
+            return "Rejected"
+    non_applied = [t for _, t in meaningful if t != "Applied"]
+    return non_applied[-1] if non_applied else "Applied"
+
+
+def local_date(utc_iso: str) -> str:
+    """Emails are stored in UTC; the 'applied on' date should be the day it was in the user's timezone."""
+    dt = datetime.fromisoformat(utc_iso).replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(ZoneInfo(config.TIMEZONE)) if config.TIMEZONE else dt.astimezone()
+    return dt.strftime("%Y-%m-%d")
+
+
+def recompute(conn, app_id: int):
+    app = conn.execute("SELECT status_locked FROM applications WHERE id=?", (app_id,)).fetchone()
+    rows = conn.execute("SELECT received_at, type FROM events WHERE application_id=?", (app_id,)).fetchall()
+    times = [r["received_at"] for r in rows]
+    applied = [r["received_at"] for r in rows if r["type"] == "Applied"]
+    fields = {"last_event_at": max(times) if times else None}
+    if applied:
+        fields["applied_at"] = local_date(min(applied))
+    if not app["status_locked"]:
+        fields["status"] = derive_status([(r["received_at"], r["type"]) for r in rows])
+    sets = ", ".join(f"{k}=?" for k in fields)
+    conn.execute(f"UPDATE applications SET {sets} WHERE id=?", (*fields.values(), app_id))
+
+
+def apply_parsed(conn, msg: dict, p: Parsed) -> str:
+    """Insert the event (creating/matching an application). Returns the outcome label."""
+    is_applied = p.status == "Applied"
+    app, confident = db.find_application(conn, p.company, p.role, p.req_id, is_applied)
+    review = int(not confident or not p.status)
+
+    if app is None:
+        cur = conn.execute(
+            """INSERT INTO applications (company, company_key, role, req_id, job_type, source, status, needs_review)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (p.company, db.company_key(p.company), p.role, p.req_id, p.job_type, "Email",
+             p.status or "Applied", int(not p.status)),
+        )
+        app_id = cur.lastrowid
+    else:
+        app_id = app["id"]
+        # enrich blanks, never overwrite what the user or an earlier email set
+        conn.execute(
+            """UPDATE applications SET
+                 role = CASE WHEN role = '' THEN ? ELSE role END,
+                 req_id = CASE WHEN req_id = '' THEN ? ELSE req_id END,
+                 job_type = CASE WHEN job_type = '' THEN ? ELSE job_type END,
+                 needs_review = needs_review OR ?
+               WHERE id=?""",
+            (p.role, p.req_id, p.job_type, review, app_id),
+        )
+
+    conn.execute(
+        "INSERT INTO events (application_id, gmail_id, type, received_at, subject, sender, snippet) VALUES (?,?,?,?,?,?,?)",
+        (app_id, msg["id"], p.status or "Update", msg["received_at"], msg["subject"][:300], msg["sender"][:200],
+         " ".join(msg["body"].split())[:400]),
+    )
+    recompute(conn, app_id)
+    return "needs_review" if review else "linked"
+
+
+# ---------------------------------------------------------------- orchestration
+
+def _fetch_with_retries(svc, mid, waiting, tries: int = 3):
+    for attempt in range(tries):
+        try:
+            return gmail.fetch_message(svc, mid, on_wait=waiting)
+        except (TimeoutError, OSError, ConnectionError) as e:   # network blips (httplib2 raises these)
+            print(f"[sync] fetch {mid} failed ({type(e).__name__}: {e}), attempt {attempt + 1}/{tries}")
+            time.sleep(2 * (attempt + 1))
+    return None
+
+
+class SyncState:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        self.running = False
+        self.total = self.done = 0
+        self.added = self.updated = self.ignored = self.review = self.failed = 0
+        self.error = ""
+        self.message = ""
+
+
+state = SyncState()
+
+
+def run_sync(since: date, until: date | None = None):
+    if not state.lock.acquire(blocking=False):
+        return
+    try:
+        state.reset()
+        state.running = True
+        state.message = "Searching Gmail…"
+        svc = gmail.service()
+        ids = gmail.list_message_ids(svc, since, until)
+        with db.session() as conn:
+            seen = {r[0] for r in conn.execute("SELECT gmail_id FROM seen_messages")}
+            extra_blocked = tuple(r[0] for r in conn.execute("SELECT pattern FROM blocked_senders"))
+        todo = [i for i in ids if i not in seen]
+        state.total = len(todo)
+        state.message = f"Processing {len(todo)} new emails (of {len(ids)} matches)…"
+
+        # Gmail lists newest-first; reverse so applications are created before their later updates.
+        # Each message is fetched, parsed and saved on its own, so a failure or quota stall
+        # never loses progress: re-running the sync resumes where it stopped.
+        def waiting(sec):
+            state.message = f"Gmail rate limit hit, waiting {int(sec)}s…"
+
+        for mid in reversed(todo):
+            msg = _fetch_with_retries(svc, mid, waiting)
+            if msg is None:          # transient failure: leave it unseen so the next sync retries it
+                state.failed += 1
+                state.done += 1
+                continue
+            state.message = f"Processing {len(todo)} new emails (of {len(ids)} matches)…"
+            try:
+                p = parse_email(msg["subject"], msg["sender"], msg["body"], extra_blocked=extra_blocked)
+            except LLMExhausted:
+                raise
+            except Exception as e:     # a parser bug or odd email must not kill the whole run
+                print(f"[sync] parse failed for {mid}: {type(e).__name__}: {e}")
+                state.failed += 1
+                state.done += 1
+                continue
+            with db.session() as conn:
+                if not p.is_job or not p.company:
+                    outcome = "ignored"
+                    state.ignored += 1
+                else:
+                    before = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+                    outcome = apply_parsed(conn, msg, p)
+                    after = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+                    state.added += after - before
+                    state.updated += int(after == before)
+                    state.review += int(outcome == "needs_review")
+                conn.execute("INSERT OR REPLACE INTO seen_messages (gmail_id, outcome) VALUES (?,?)", (msg["id"], outcome))
+            state.done += 1
+        state.message = "Done"
+    except gmail.AuthRequired as e:
+        state.error = str(e)
+    except LLMExhausted as e:
+        state.error = f"{e} ({state.done} of {state.total} emails processed this run.)"
+    except Exception as e:
+        state.error = f"{type(e).__name__}: {e}"
+    finally:
+        state.running = False
+        try:
+            with db.session() as conn:
+                conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_sync', ?)", (json.dumps({
+                    "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "since": since.isoformat(),
+                    "added": state.added, "updated": state.updated, "ignored": state.ignored, "failed": state.failed,
+                    "needs_review": state.review, "processed": state.done, "total": state.total, "error": state.error,
+                }),))
+        except Exception as e:
+            print(f"[sync] could not save sync summary: {e}")
+        state.lock.release()

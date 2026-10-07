@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Tracker</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f3; --surface: #ffffff; --surface-2: #f0f0ec; --text: #1b1b19; --muted: #6c6c66; --line: #e3e3dd;
+    --accent: #2f5bea; --accent-ink: #ffffff; --warn: #a15207; --warn-bg: #fdf0c8;
+    --shadow: 0 1px 2px rgba(20,20,10,.05), 0 4px 16px rgba(20,20,10,.04);
+    --Saved: #6b7280; --Applied: #2563eb; --OA: #7c3aed; --Interview: #0d9488; --Offer: #15803d; --Rejected: #b91c1c; --Withdrawn: #8b8f98;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121211; --surface: #1c1c1a; --surface-2: #252523; --text: #ecece8; --muted: #9b9b93; --line: #2d2d2a;
+            --accent: #7b97ff; --accent-ink: #0b0b0a; --warn: #fbbf24; --warn-bg: #3a2e0b; --shadow: 0 1px 2px rgba(0,0,0,.4);
+            --Applied: #5b9bff; --OA: #a78bfa; --Interview: #2dd4bf; --Offer: #4ade80; --Rejected: #f87171; --Withdrawn: #9ca3af; --Saved: #9ca3af; }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1120px; margin: 0 auto; padding: 32px 20px 72px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  /* ---- header */
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 24px; line-height: 1.2; letter-spacing: -.02em; margin: 0; }
+  .subtitle { margin-top: 2px; color: var(--muted); }
+
+  /* ---- controls */
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 7px 14px; cursor: pointer; transition: border-color .12s, background .12s; }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.06); }
+  button.danger { color: var(--Rejected); }
+  button:disabled { opacity: .55; cursor: default; }
+  input, textarea { background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px; min-height: 36px; }
+  input::placeholder, textarea::placeholder { color: var(--muted); opacity: .8; }
+
+  /* one consistent dropdown: no native arrow, chevron drawn with room on the right */
+  select {
+    --chev: var(--muted);
+    appearance: none; -webkit-appearance: none;
+    background-color: var(--surface); border: 1px solid var(--line); border-radius: 9px;
+    padding: 7px 34px 7px 12px; min-height: 36px; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--chev) 50%), linear-gradient(135deg, var(--chev) 50%, transparent 50%);
+    background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+  }
+  select:hover { border-color: var(--muted); }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow); }
+
+  /* ---- sync */
+  .sync { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+  .sync h2 { font-size: 15px; margin: 0 8px 7px 0; }
+  .field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .sync-note { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  #msg { align-self: center; min-height: 20px; font-size: 13px; }
+  .err { color: var(--Rejected); }
+
+  /* ---- chips */
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 22px 0 14px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .chip b { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .chip.static { cursor: default; padding: 4px 6px 4px 12px; }
+  .chip.static button { border: 0; background: transparent; padding: 0 8px; border-radius: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .rate { margin-left: 6px; font-size: 13px; }
+
+  /* ---- toolbar */
+  .toolbar { display: flex; gap: 10px; margin-bottom: 14px; }
+  .toolbar input { flex: 1; min-width: 0; }
+
+  /* ---- table */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; white-space: nowrap; background: var(--surface-2); padding-top: 9px; padding-bottom: 9px; }
+  tbody tr.app { cursor: pointer; transition: background .1s; }
+  tbody tr.app:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+  tbody tr.app.open { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  tr:last-child td { border-bottom: 0; }
+  td.company { font-weight: 600; min-width: 150px; }
+  td.role { min-width: 220px; }
+  td.date { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+  .repeat { margin-left: 6px; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); cursor: help; }
+  .dash { color: var(--muted); opacity: .6; }
+  .type-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
+
+  select.status {
+    --chev: var(--c);
+    background-color: color-mix(in srgb, var(--c) 13%, var(--surface));
+    border-color: transparent; color: var(--c); font-weight: 600; font-size: 13px;
+    padding: 4px 28px 4px 12px; min-height: 28px; border-radius: 999px;
+    background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  }
+  select.status:hover { border-color: color-mix(in srgb, var(--c) 40%, transparent); }
+  .badge { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; margin-left: 8px; vertical-align: 1px; }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+
+  /* ---- expanded row */
+  .detail td { background: var(--surface-2); padding: 18px 20px; }
+  .detail-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 28px; }
+  @media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; gap: 20px; } }
+  .detail h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .timeline { list-style: none; margin: 0; padding: 0 0 0 4px; }
+  .timeline li { position: relative; padding: 0 0 14px 20px; border-left: 2px solid var(--line); margin-left: 4px; }
+  .timeline li:last-child { padding-bottom: 0; border-left-color: transparent; }
+  .timeline li::before { content: ""; position: absolute; left: -6px; top: 5px; width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--muted)); border: 2px solid var(--surface-2); }
+  .timeline .subj { color: var(--muted); }
+  .timeline .snip { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .form-grid .wide { grid-column: 1 / -1; }
+  .form-grid input, .form-grid select, .form-grid textarea { width: 100%; }
+  textarea { min-height: 80px; resize: vertical; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .actions .spacer { flex: 1; }
+
+  .empty { padding: 48px 16px; text-align: center; }
+  details.card > summary { cursor: pointer; }
+  details.card[open] > summary { margin-bottom: 4px; }
+
+  /* ---- dialog */
+  dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--text); width: min(460px, 92vw); padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+  dialog::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px); }
+  dialog h3 { margin: 0 0 4px; font-size: 18px; }
+  dialog label { display: block; margin-top: 12px; font-size: 12px; color: var(--muted); }
+  dialog input, dialog select { width: 100%; margin-top: 4px; color: var(--text); }
+  dialog .actions { justify-content: flex-end; margin-top: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Job Tracker</h1>
+      <div class="subtitle" id="subtitle">&nbsp;</div>
+    </div>
+    <div class="row">
+      <a href="/api/export.csv">Export CSV</a>
+      <button class="primary" id="addBtn">+ Add application</button>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="sync">
+      <h2>Sync from Gmail</h2>
+      <label class="field">From<input type="date" id="since"></label>
+      <label class="field">To<input type="date" id="until" title="Optional: leave empty for up to today"></label>
+      <button class="primary" id="syncBtn">Sync</button>
+      <span id="msg" class="muted"></span>
+    </div>
+    <div id="lastSync" class="sync-note" style="margin-top:10px"></div>
+    <div class="sync-note">Reads application emails in this date range (empty <b>To</b> = up to today). Safe to re-run: emails already seen are skipped.</div>
+  </section>
+
+  <div class="chips" id="chips"></div>
+
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search company or role…">
+    <select id="typeFilter" aria-label="Filter by type"><option value="">All types</option><option>Co-op</option><option>New Grad</option><option>Internship</option><option>Full-time</option></select>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Company</th><th>Role</th><th>Type</th><th>Status</th><th>Applied</th><th>Last update</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty muted" id="empty" hidden>No applications yet. Pick a date range above and hit Sync, or add one manually.</div>
+  </div>
+  <details class="card" id="blockedBox" style="margin-top:20px">
+    <summary><strong>Blocked senders</strong> <span class="muted" id="blockedCount"></span></summary>
+    <div id="blockedList" class="row" style="margin-top:10px"></div>
+    <div class="muted" style="margin-top:8px">Emails from these domains are ignored on sync. Add more with “Delete &amp; block sender”, or set BLOCKED_SENDERS in .env.</div>
+  </details>
+</main>
+
+<dialog id="addDlg">
+  <form method="dialog" id="addForm">
+    <h3>Add application</h3>
+    <label>Company *<input name="company" required></label>
+    <label>Role<input name="role"></label>
+    <label>Type<select name="job_type"><option value="">—</option><option>Co-op</option><option>New Grad</option><option>Internship</option><option>Full-time</option></select></label>
+    <label>Status<select name="status"></select></label>
+    <label>Applied on<input name="applied_at" type="date"></label>
+    <label>Link<input name="link" type="url" placeholder="https://…"></label>
+    <div class="actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button class="primary" value="ok">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const STATUSES = ["Saved", "Applied", "OA", "Interview", "Offer", "Rejected", "Withdrawn"];
+let apps = [], stats = {}, filter = "all", openId = +new URLSearchParams(location.hash.slice(1)).get("open") || null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const DASH = '<span class="dash">—</span>';
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const fmt = s => {
+  if (!s) return DASH;
+  const [y, m, d] = s.slice(0, 10).split("-").map(Number);
+  return `${MONTHS[m - 1]} ${d}${y !== new Date().getFullYear() ? ", " + y : ""}`;
+};
+const ago = s => {
+  if (!s) return DASH;
+  const days = Math.floor((Date.now() - new Date(s.replace(" ", "T") + (s.includes("Z") ? "" : "Z"))) / 864e5);
+  const rel = days <= 0 ? "today" : days === 1 ? "yesterday" : days < 14 ? `${days}d ago` : days < 60 ? `${Math.round(days / 7)}w ago` : null;
+  return rel ? `<span title="${esc(s.slice(0, 10))}">${rel}</span>` : fmt(s);
+};
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.status === 204 ? null : r.json();
+}
+
+async function load() {
+  [apps, stats] = await Promise.all([api("/api/applications"), api("/api/stats")]);
+  $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") : "Nothing tracked yet";
+  renderChips(); renderRows();
+}
+
+function renderChips() {
+  const by = stats.by_status || {};
+  const chips = [["all", "All", stats.total || 0, "var(--muted)"],
+    ...STATUSES.filter(s => by[s]).map(s => [s, s, by[s], `var(--${s})`])];
+  if (stats.needs_review) chips.push(["review", "Needs review", stats.needs_review, "var(--warn)"]);
+  $("#chips").innerHTML = chips.map(([k, label, n, c]) =>
+    `<button class="chip ${k === "review" ? "warn" : ""}" data-f="${k}" aria-pressed="${filter === k}">
+       <span class="dot" style="background:${c}"></span>${esc(label)} <b>${n}</b></button>`).join("") +
+    (stats.total ? `<span class="muted rate">${Math.round(stats.response_rate * 100)}% response rate</span>` : "");
+}
+
+function visible() {
+  const q = $("#q").value.trim().toLowerCase(), t = $("#typeFilter").value;
+  return apps.filter(a =>
+    (filter === "all" || (filter === "review" ? a.needs_review : a.status === filter)) &&
+    (!t || a.job_type === t) &&
+    (!q || (a.company + " " + a.role).toLowerCase().includes(q)));
+}
+
+function renderRows() {
+  const list = visible();
+  $("#empty").hidden = apps.length > 0;
+  $("#rows").innerHTML = list.map(a => `
+    <tr class="app ${a.id === openId ? "open" : ""}" data-id="${a.id}">
+      <td class="company">${esc(a.company)}${a.needs_review ? '<span class="badge warn">review</span>' : ""}</td>
+      <td class="role">${esc(a.role) || DASH}</td>
+      <td>${a.job_type ? `<span class="type-tag">${esc(a.job_type)}</span>` : DASH}</td>
+      <td><select class="status" aria-label="Status" data-id="${a.id}" style="--c:var(--${a.status})">
+        ${STATUSES.map(s => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select></td>
+      <td class="date">${fmt(a.applied_at)}${a.applied_dates.length > 1 ? `<span class="repeat" title="Applied ${a.applied_dates.length} times: ${a.applied_dates.map(d => fmt(d).replace(/<[^>]*>/g, "")).join(", ")}">×${a.applied_dates.length}</span>` : ""}</td>
+      <td class="date">${ago(a.last_event_at)}</td>
+    </tr>${a.id === openId ? `<tr class="detail"><td colspan="6" id="detail-${a.id}">Loading…</td></tr>` : ""}`).join("");
+  if (!list.length && apps.length) $("#rows").innerHTML = '<tr><td colspan="6" class="empty muted">No applications match these filters.</td></tr>';
+  if (openId) loadDetail(openId);
+}
+
+async function loadDetail(id) {
+  const a = apps.find(x => x.id === id), el = document.getElementById("detail-" + id);
+  if (!a || !el) return;
+  const ev = await api(`/api/applications/${id}/events`);
+  el.innerHTML = `<div class="detail-grid">
+    <div><h4>Email timeline</h4>
+      <ul class="timeline">${ev.length ? ev.map(e => `<li style="--c:var(--${STATUSES.includes(e.type) ? e.type : "Saved"})">
+        <b>${esc(e.type)}</b> <span class="muted">· ${fmt(e.received_at)}</span>
+        <div class="subj">${esc(e.subject)}</div>
+        <div class="snip">${esc(e.snippet.slice(0, 160))}</div></li>`).join("") : '<li class="muted">No emails linked (manual entry).</li>'}</ul></div>
+    <div><h4>Details</h4>
+      <div class="form-grid">
+        <input data-k="company" value="${esc(a.company)}" placeholder="Company" aria-label="Company">
+        <input data-k="role" value="${esc(a.role)}" placeholder="Role" aria-label="Role">
+        <input data-k="link" value="${esc(a.link)}" placeholder="Job link" aria-label="Job link">
+        <select data-k="job_type" aria-label="Type">${[["", "No type"], ["Co-op"], ["New Grad"], ["Internship"], ["Full-time"]].map(([t, l]) => `<option value="${t}" ${t === a.job_type ? "selected" : ""}>${l || t}</option>`).join("")}</select>
+        <textarea class="wide" data-k="notes" placeholder="Notes (recruiter, referral, follow-up date…)" aria-label="Notes">${esc(a.notes)}</textarea>
+      </div>
+      <div class="actions">
+        ${a.needs_review ? '<button data-act="reviewed">Mark reviewed</button>' : ""}
+        <span class="spacer"></span>
+        <button class="danger" data-act="block" title="Delete this application and ignore future emails from its sender's domain">Delete &amp; block sender</button>
+        <button class="danger" data-act="delete">Delete</button></div>
+    </div></div>`;
+}
+
+$("#chips").addEventListener("click", e => {
+  const b = e.target.closest("[data-f]"); if (!b) return;
+  filter = b.dataset.f; renderChips(); renderRows();
+});
+$("#q").addEventListener("input", renderRows);
+$("#typeFilter").addEventListener("change", renderRows);
+
+$("#rows").addEventListener("click", e => {
+  if (e.target.closest("select, input, textarea, button")) return;
+  const tr = e.target.closest("tr.app");
+  if (tr) { openId = openId === +tr.dataset.id ? null : +tr.dataset.id; renderRows(); }
+});
+$("#rows").addEventListener("change", async e => {
+  const t = e.target, row = t.closest("tr");
+  if (t.classList.contains("status")) {
+    await api(`/api/applications/${t.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: t.value }) });
+    await load();
+  } else if (t.dataset.k) {
+    const id = +row.querySelector("td").id.replace("detail-", "");
+    await api(`/api/applications/${id}`, { method: "PATCH", body: JSON.stringify({ [t.dataset.k]: t.value }) });
+    const a = apps.find(x => x.id === id); a[t.dataset.k] = t.value;
+    if (["company", "role", "job_type"].includes(t.dataset.k)) renderRows();
+  }
+});
+$("#rows").addEventListener("click", async e => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const id = openId;
+  if (b.dataset.act === "delete" && confirm("Delete this application and its email history?")) {
+    await api(`/api/applications/${id}`, { method: "DELETE" }); openId = null; await load();
+  }
+  if (b.dataset.act === "block") {
+    const pv = await api(`/api/applications/${id}/block-preview`);
+    const msg = pv.will_block.length
+      ? `Delete this application and ignore future emails from:\n\n  ${pv.will_block.join("\n  ")}\n\nYou can undo the block from "Blocked senders" at the bottom.`
+      : "Delete this application? (Its sender is a shared service like Greenhouse/Workday, so nothing will be blocked.)";
+    if (confirm(msg)) { await api(`/api/applications/${id}/delete-and-block`, { method: "POST" }); openId = null; await load(); loadBlocked(); }
+  }
+  if (b.dataset.act === "reviewed") {
+    await api(`/api/applications/${id}`, { method: "PATCH", body: JSON.stringify({ needs_review: false }) }); await load();
+  }
+});
+
+// add dialog
+$("#addForm [name=status]").innerHTML = STATUSES.map(s => `<option ${s === "Applied" ? "selected" : ""}>${s}</option>`).join("");
+$("#addBtn").onclick = () => $("#addDlg").showModal();
+$("#addForm").addEventListener("submit", async e => {
+  if (e.submitter?.value !== "ok") return;
+  const body = Object.fromEntries(new FormData(e.target)); if (!body.applied_at) delete body.applied_at;
+  await api("/api/applications", { method: "POST", body: JSON.stringify(body) });
+  e.target.reset(); await load();
+});
+
+// sync
+const iso = d => d.toISOString().slice(0, 10);
+$("#since").value = store.get("since") || iso(new Date(Date.now() - 90 * 864e5));
+$("#until").value = store.get("until") || "";
+async function poll() {
+  const s = await api("/api/sync/status");
+  const msg = $("#msg");
+  msg.className = s.error ? "err" : "muted";
+  msg.textContent = s.error || (s.running
+    ? `${s.message} ${s.done}/${s.total}`
+    : s.message === "Done" ? `Done: ${s.added} new, ${s.updated} updated, ${s.ignored} ignored, ${s.needs_review} to review` +
+        (s.failed ? `, ${s.failed} failed (sync again to retry)` : "") : "");
+  $("#syncBtn").disabled = s.running;
+  if (s.running) { setTimeout(poll, 1200); if (s.done % 10 === 0) load(); }
+  else if (s.message) { load(); showLastSync(); }   // finished or failed: refresh the table either way
+}
+$("#syncBtn").onclick = async () => {
+  store.set("since", $("#since").value); store.set("until", $("#until").value);
+  try {
+    await api("/api/sync", { method: "POST", body: JSON.stringify({ since: $("#since").value || null, until: $("#until").value || null }) });
+    poll();
+  } catch (err) { $("#msg").className = "err"; $("#msg").textContent = err.message; }
+};
+
+async function loadBlocked() {
+  const list = await api("/api/blocked");
+  $("#blockedCount").textContent = `(${list.length})`;
+  $("#blockedList").innerHTML = list.length ? list.map(p =>
+    `<span class="chip static">${esc(p)} <button data-unblock="${esc(p)}" title="Unblock" style="padding:0 6px">×</button></span>`).join("")
+    : '<span class="muted">None yet.</span>';
+}
+$("#blockedList").addEventListener("click", async e => {
+  const b = e.target.closest("[data-unblock]"); if (!b) return;
+  await api(`/api/blocked/${encodeURIComponent(b.dataset.unblock)}`, { method: "DELETE" }); loadBlocked();
+});
+
+async function showLastSync() {
+  const l = await api("/api/sync/last").catch(() => null), el = $("#lastSync");
+  const auto = l && l.auto_minutes ? ` Auto-sync every ${l.auto_minutes >= 60 ? l.auto_minutes / 60 + "h" : l.auto_minutes + " min"} while the server is running.` : " Auto-sync is off.";
+  if (!l || !l.at) { el.className = "sync-note"; el.textContent = "Not synced yet." + auto; return; }
+  const mins = Math.max(0, Math.round((Date.now() - new Date(l.at)) / 60000));
+  const when = mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)}h ago` : `${Math.round(mins / 1440)}d ago`;
+  const detail = `${l.added} new, ${l.updated} updated, ${l.needs_review} to review` + (l.failed ? `, ${l.failed} failed` : "");
+  el.className = "sync-note" + (l.error ? " err" : "");
+  el.textContent = l.error
+    ? `Last sync ${when} stopped early (${l.processed}/${l.total} processed): ${l.error}`
+    : `Last synced ${when}: ${detail}.${auto}`;
+}
+setInterval(() => { if (!document.hidden) { showLastSync(); load(); } }, 60000);   // pick up background syncs
+load().then(poll); loadBlocked(); showLastSync();
+</script>
+</body>
+</html>

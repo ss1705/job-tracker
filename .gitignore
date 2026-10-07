@@ -1,0 +1,22 @@
+# secrets & personal data -- never commit
+.env
+secrets/
+legacy/
+token.json
+*.pickle
+credentials.json
+data/
+tests/labeled_emails.csv
+# python
+.venv/
+__pycache__/
+.pytest_cache/
+
+# old flat-layout files (root-owned, couldn't be moved; delete once ownership is fixed)
+/main.py
+/merge.py
+/eval_results.csv
+/test_set.csv
+/test_set_labeled.csv
+/processed_ids.json
+/gmail_credentials.json

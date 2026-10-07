@@ -1,0 +1,423 @@
+"""Turn one email (subject, sender, body) into a structured application event.
+
+Cheap deterministic rules run first (ATS sender domains, subject templates, status phrases).
+The LLM is only called when the rules can't produce company + role + status, and the whole
+thing still works (flagging rows for review) when no API key is configured.
+"""
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from email.utils import parseaddr
+
+from bs4 import BeautifulSoup
+
+from . import config
+
+# ---------------------------------------------------------------- sender handling
+
+BLOCKED_DOMAINS = (
+    "lensa.com", "indeed.com", "linkedin.com", "glassdoor.com", "ziprecruiter.com",
+    "handshake.com", "joinhandshake.com", "business.amazon.com", "datacamp.com",
+    "fireflies.ai", "extern.com", "jobright.ai", "simplify.jobs", "ripplematch.co",
+    # job-posting / recommendation feeds (they email *postings*, not your applications)
+    "wellfound.com", "angel.co", "otta.com", "welcometothejungle.com", "builtin.com", "dice.com",
+    "monster.com", "careerbuilder.com", "hiring.cafe", "levels.fyi", "wayup.com", "talent.com",
+    "adzuna.com", "jooble.org", "snagajob.com", "joinhandshake.com", "nodesk.co", "weworkremotely.com",
+    # communities / programs that send newsletters and opportunity blasts
+    "rewritingthecode",
+)
+ATS_DOMAINS = (
+    "greenhouse-mail.io", "greenhouse.io", "myworkday.com", "icims.com", "lever.co",
+    "ashbyhq.com", "smartrecruiters.com", "jobvite.com", "taleo.net", "successfactors",
+    "workable.com", "breezy.hr", "bamboohr.com", "recruitee.com", "hirevue.com", "ultipro.com", "ukg.com",
+    "dayforcehcm.com", "paylocity.com", "adp.com", "oraclecloud.com", "eightfold.ai",
+)
+# assessment/scheduling platforms: they send on behalf of the employer, so their name is never the company
+PLATFORM_DOMAINS = ("hackerrank", "codesignal.com", "codility.com", "hirevue.com", "calendly.com",
+                    "goodtime.io", "modernhire.com", "karat.com", "testgorilla.com", "criteriacorp.com",
+                    "arcticshores.com", "pymetrics.com", "shl.com", "plum.io", "vervoe.com", "harver.com",
+                    "cappfinity.com", "mettl.com", "glider.ai", "coderpad.io", "qualified.io", "devskiller.com")
+_GENERIC_NAMES = re.compile(
+    r"\b(talent acquisition|talent|recruiting|recruitment|recruiter|careers?|hiring team|hiring|"
+    r"human resources|hr|no[- ]?reply|do not reply|noreply|notifications?|workday|myworkday|"
+    r"greenhouse|team|jobs|support|assessments?|early career|emerging talent|student programs|rs)\b",
+    re.I,
+)
+
+
+def _sender_parts(sender: str) -> tuple[str, str]:
+    name, addr = parseaddr(sender)
+    return name.strip(), addr.strip().lower()
+
+
+def _domain(addr: str) -> str:
+    return addr.split("@")[-1]
+
+
+def blockable_pattern(sender: str) -> str | None:
+    """The domain to block for "delete & block sender", or None when the domain is shared by many
+    employers (ATS, assessment platforms, free mail), where a block would hide real applications."""
+    dom = _domain(_sender_parts(sender)[1])
+    if not dom or any(d in dom for d in (*ATS_DOMAINS, *PLATFORM_DOMAINS, *_GENERIC_MAIL, "linkedin.com", "indeed.com")):
+        return None
+    return dom
+
+
+def is_ats(sender: str) -> bool:
+    return any(d in _domain(_sender_parts(sender)[1]) for d in ATS_DOMAINS)
+
+
+def is_blocked(sender: str, subject: str, extra: tuple = ()) -> bool:
+    _, addr = _sender_parts(sender)
+    dom = _domain(addr)
+    # LinkedIn / Indeed *do* send real application confirmations; everything else from them is noise
+    if "linkedin.com" in dom and re.search(r"your application was sent", subject, re.I):
+        return False
+    if addr.startswith("indeedapply@"):
+        return False
+    return any(d in dom for d in BLOCKED_DOMAINS) or any(x in addr for x in (*config.EXTRA_BLOCKED_SENDERS, *extra))
+
+
+# ---------------------------------------------------------------- text helpers
+
+def html_to_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for t in soup(["script", "style", "head"]):
+        t.decompose()
+    text = soup.get_text("\n")
+    text = re.sub(r"[​-‏⁠­͏﻿]", "", text)
+    text = re.sub(r"[ \t\xa0]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()
+
+
+def clean_body(text: str, limit: int = 3500) -> str:
+    text = re.sub(r"https?://\S+", "", text)           # tracking URLs eat the budget
+    text = re.sub(r"[​-‏⁠­͏﻿]", "", text)
+    text = re.sub(r"[ \t\xa0]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    return text[:limit]
+
+
+# ---------------------------------------------------------------- rules
+
+_STRONG_REJECT = re.compile(
+    r"(not (to )?(be )?(move|moving|proceed|proceeding|go|going|advance|advancing|continue|continuing) (forward|further|with your)|"
+    r"difficult decision|decision not to|will not be (moving|proceeding)|won'?t be (moving|proceeding)|"
+    r"decided to (move|go|proceed|pursue) (forward )?with (other|another)|pursu\w+ other (candidates|applicants)|"
+    r"position (has been|was|is) (now )?(filled|closed)|no longer (being )?consider|not (been )?selected|"
+    r"not a (good )?(match|fit)|we regret|decided not to (move|proceed|pursue|advance)|"
+    r"will not (be )?(advance|advancing|continu)|not (be )?(advance|advancing) (your|you)|"
+    r"unable to (offer|move forward|proceed)|(not|n't) (be )?able to (move|proceed) forward|"
+    r"decided to (move|go|proceed|pursue)( forward)? with (candidates|applicants|those|a candidate)|"
+    r"(move|moving) forward with (candidates|applicants)|(closer|better) (fit|match))",
+    re.I,
+)
+_WEAK_REJECT = re.compile(r"(unfortunately|other candidates|other applicants|careful consideration)", re.I)
+_OFFER = re.compile(r"(pleased to (offer|extend)|offer letter|offer of employment|extend (you )?an offer|formal offer)", re.I)
+_OA = re.compile(
+    r"(online assessment|coding (challenge|assessment|test)|hackerrank|codesignal|codility|"
+    r"(complete|take) (the|this|your) (following )?assessment|take[- ]home|hirevue|technical assessment)", re.I)
+_INTERVIEW = re.compile(
+    r"(schedule (an?|your|the) [\w\- ]{0,25}interview|invit\w+ you to (an? )?(interview|a call|speak)|"
+    r"interview (invitation|confirmation|scheduled|availability)|phone screen|next round|"
+    r"(book|select) a time|calendly)", re.I)
+_APPLIED = re.compile(
+    r"(thank(s| you) (you )?for (applying|your application|submitting|your (online )?submission)|"
+    r"(application|resume) (has been |was )?(successfully )?(received|submitted)|"
+    r"we('ve| have) received your (\w+ ){0,3}(application|resume)|received your (\w+ ){0,3}application|"
+    r"application (confirmation|received)|your application (was sent|to .{1,80} (was|has been) (sent|submitted|received))|"
+    r"thanks for applying|successfully (applied|submitted)|applying to)", re.I)
+# words that show up in decisions but not in plain receipts; seeing them next to an "Applied" guess means "ask the LLM"
+_OUTCOME_HINT = re.compile(
+    r"(decision|candidacy|careful (review|consideration)|move forward|moving forward|not (to )?(proceed|advance|continue)|"
+    r"other candidates|regret|unfortunately|no longer|not selected)", re.I)
+# a "still under consideration" holding email is not a rejection
+_HOLD = re.compile(r"(still under consideration|await to share next steps|remain under review)", re.I)
+
+
+def is_receipt_subject(subject: str) -> bool:
+    """True for genuine application-receipt subjects ("Thank you for applying…"), not reminders/updates."""
+    return bool(_APPLIED.search(subject)) and not re.search(r"reminder|verify|incomplete|update", subject, re.I)
+
+
+def rule_status(subject: str, body: str, sender: str = "") -> str | None:
+    head = f"{subject}\n{body[:2500]}"
+    if _OFFER.search(head):
+        return "Offer"
+    if _STRONG_REJECT.search(head):
+        return "Rejected"
+    if _HOLD.search(head):
+        return None
+    if "hirevue.com" in sender.lower():
+        return "OA"
+    if _OA.search(head):
+        return "OA"
+    if _INTERVIEW.search(head):
+        return "Interview"
+    if _APPLIED.search(subject) or _APPLIED.search(body[:800]):
+        return "Applied"
+    if _HOLD.search(head):
+        return None
+    if _WEAK_REJECT.search(head):
+        return "Rejected"
+    return None
+
+
+def _clean_company(name: str) -> str:
+    name = re.sub(r"\s*@.*$", "", name)          # "Cotiviti @ icims" -> "Cotiviti"
+    name = _GENERIC_NAMES.sub(" ", name)
+    name = re.sub(r"\([^)]*\)", " ", name)
+    name = re.sub(r"[|:–,]+|\s-\s", " ", name)
+    return re.sub(r"\s+", " ", name).strip(" -.")
+
+
+_SUBJECT_COMPANY = [
+    r"^(?P<c>[^|:–]{2,40}?)\s*\|",                                                    # "Ripple | Update on..."
+    r"^(?P<c>[A-Z][^|:–]{1,40}?) - (?i:update)",                                        # "Lightmatter - Update about..."
+    r"(?i:update (?:on|from|about|regarding) (?:your )?)(?P<c>[A-Z][\w&.' -]{1,40}?)(?i: application| status| position)",
+    r"^(?:An )?(?i:update from) (?P<c>[A-Z][\w&.' ]{1,40})$",
+    r"^(?P<c>[A-Z][\w&.,' -]{1,40}?) (?i:application update|interview update|talent acquisition|application status)",
+    r"(?i:applic\w+ (?:to|at|with)) (?P<c>[A-Z][\w&.' ]{1,40}?)(?: for| -|,|!|:|$)",
+    r"(?i:thank(?:s| you) for applying (?:to|at|with)) (?P<c>[A-Z][\w&.' ]{1,40}?)(?:!|\.|,| -|$)",
+    r"(?i:your application was sent to) (?P<c>.+)$",
+]
+_ROLE_WORDS = re.compile(r"\b(intern|internship|engineer|analyst|developer|scientist|manager|position|role|opening|software|data)\b", re.I)
+_GENERIC_MAIL = ("gmail.com", "outlook.com", "yahoo.com", "hotmail.com", "icloud.com")
+
+
+def _plausible_company(c: str) -> bool:
+    return bool(c) and 1 < len(c) <= 45 and c[0].isalnum() and "@" not in c and not _ROLE_WORDS.search(c) and not re.match(r"^(your|the|an?|application|update|thank|thanks)\b", c, re.I)
+
+
+def rule_company(subject: str, sender: str) -> str:
+    name, addr = _sender_parts(sender)
+    dom = _domain(addr)
+    if "linkedin.com" in dom:
+        m = re.search(r"your application was sent to (.+)$", subject, re.I)
+        return m.group(1).strip() if m else ""
+    for pat in _SUBJECT_COMPANY:
+        m = re.search(pat, subject.strip())
+        if m:
+            c = _clean_company(m.group("c"))
+            if _plausible_company(c):
+                return c
+    cand = "" if any(d in dom for d in PLATFORM_DOMAINS) else _clean_company(name)
+    looks_like_person = bool(re.fullmatch(r"[A-Z][a-z]+ [A-Z][a-z]+", cand))
+    if _plausible_company(cand) and not re.search(r"\d", cand) and not looks_like_person:
+        return cand
+    # last resort: the sender's own domain (skip ATS / assessment platforms / free-mail hosts)
+    if not is_ats(sender) and not any(g in dom for g in _GENERIC_MAIL + PLATFORM_DOMAINS):
+        parts = dom.split(".")
+        sld = parts[-2] if len(parts) >= 2 else ""
+        if sld and sld not in ("edu", "co") and len(sld) > 2:
+            return sld.title()
+    return ""
+
+
+_ROLE_PATTERNS = [
+    r"for (?:the )?(?P<r>[^|]{5,90}?) (?:position|role|opportunity)\b",
+    r"applying to (?:the )?(?P<r>[^|]{5,90}?) (?:position|role)\b",
+    r"application (?:to|for) (?:the )?(?P<r>[^|!]{5,90}?)(?: at | with | - |!|$)",
+    r"application update\s*[:\-–]\s*(?P<r>.{5,90})$",
+    r"indeed application:\s*(?P<r>.{3,90})$",
+    r"your (?P<r>[^|]{5,70}?) application\b",
+]
+
+
+def clean_role(role: str, company: str = "") -> str:
+    role = re.sub(r"^(applying (to|for)|application (to|for)|thank you for applying (to|for))\s+(the\s+)?", "", role.strip(), flags=re.I)
+    role = re.sub(r"[,\s]*\d{4,}$", "", role).strip(" -–:,.")        # trailing req number: "Software Engineer,2132"
+    c = company.lower().strip()
+    if c and role.lower() in (c, f"{c} job", f"{c} role", f"{c} position", f"{c} application"):
+        return ""
+    if re.fullmatch(r"(?i)(\w+ )?(job|application|position|role)", role):
+        return ""
+    return role
+
+
+def rule_role(subject: str) -> str:
+    for pat in _ROLE_PATTERNS:
+        m = re.search(pat, subject, re.I)
+        if m:
+            r = re.sub(r"\s*\((?:req|job)[^)]*\)", "", m.group("r")).strip(" -–:,.")
+            if r and not re.match(r"^(your|the|this)$", r, re.I):
+                return r
+    return ""
+
+
+def find_req_id(text: str) -> str:
+    m = re.search(r"\b(?:req(?:uisition)?(?:\s*id)?|job\s*(?:id|#|number))\s*[:#]?\s*([A-Za-z]?\d{4,})", text, re.I)
+    if m:
+        return m.group(1).upper()
+    m = re.search(r"\b(R-?\d{5,})\b", text)
+    return m.group(1).upper() if m else ""
+
+
+def guess_job_type(*texts: str) -> str:
+    t = " ".join(texts).lower()
+    if re.search(r"\bco-?op\b", t):
+        return "Co-op"
+    if re.search(r"new[- ]?grad|new graduate|university grad|early career|recent grad", t):
+        return "New Grad"
+    if re.search(r"\bintern(ship)?\b", t):
+        return "Internship"
+    return ""
+
+
+# any hint of recruiting language; without one, the LLM can't add anything and we skip the call (saves quota)
+_JOB_SIGNAL = re.compile(
+    r"(applica|applied|applying|candidate|candidacy|interview|assessment|recruit|hiring|position|job|career|"
+    r"resume|offer letter|internship|co-?op|new grad|graduate program|screening|talent|requisition|\breq\b)", re.I)
+
+
+# ---------------------------------------------------------------- LLM fallback
+
+_PROMPT = """You parse emails sent to a job seeker about their job applications (internships, co-ops,
+new-grad and full-time roles). Extract structured info.
+
+Email:
+- Subject: {subject}
+- From: {sender}
+- Body:
+{body}
+
+Rules:
+- "company" = the HIRING company (not the ATS such as Greenhouse/Workday/iCIMS, not a job board, not an assessment
+  platform such as HackerRank/CodeSignal/HireVue: for those, use the employer that requested the assessment).
+  Never use a person's name as the company. Use the company's common name, e.g. "University of Pittsburgh".
+- "role" = the job title, e.g. "Software Engineer, New Grad". Empty string if absent.
+- "status": exactly one of
+  Applied   - application received / thank you for applying / confirmation
+  OA        - online assessment, coding challenge, HackerRank/CodeSignal/HireVue invite
+  Interview - invitation to schedule, or confirmation of, any interview or recruiter call
+  Rejected  - not moving forward, position filled, other candidates selected, etc.
+  Offer     - job offer
+  None      - cannot be determined (e.g. generic "we have an update" with no outcome)
+- is_job_related=false for job postings or job recommendations sent to the user (Wellfound, Otta, "new roles for you"),
+  community/program/club newsletters (e.g. Rewriting the Code, hackathons, scholarships), job-board digests, marketing, newsletters, networking, school/admin mail,
+  or anything that is not about a specific application the user submitted.
+- A message saying the candidate is "still under consideration" is status None, not Rejected.
+
+Return ONLY JSON: {{"is_job_related": bool, "company": str, "role": str, "status": "Applied|OA|Interview|Rejected|Offer|None"}}"""
+
+_client = None
+_exhausted: set[str] = set()   # models whose daily token quota is gone (for this process)
+
+
+class LLMExhausted(Exception):
+    """Every configured Groq model has hit its daily token limit."""
+
+
+def llm_available() -> bool:
+    return bool(config.GROQ_API_KEY)
+
+
+def _retry_after_seconds(msg: str) -> float:
+    m = re.search(r"try again in (?:(\d+)m)?\s*([\d.]+)s", msg)
+    return (int(m.group(1) or 0) * 60 + float(m.group(2))) if m else 30.0
+
+
+def llm_parse(subject: str, sender: str, body: str) -> dict | None:
+    """Returns the parsed dict, None on a non-quota failure (caller falls back to rules),
+    and raises LLMExhausted when no model has daily quota left."""
+    global _client
+    if not llm_available():
+        return None
+    from groq import Groq, RateLimitError
+    _client = _client or Groq(api_key=config.GROQ_API_KEY)
+    prompt = _PROMPT.format(subject=subject, sender=sender, body=clean_body(body, 2200))
+    models = [m for m in [config.GROQ_MODEL, *config.GROQ_FALLBACK_MODELS] if m not in _exhausted]
+    if not models:
+        raise LLMExhausted("Groq daily token limit reached on all configured models; progress is saved, resume later.")
+    for model in models:
+        kwargs = {"reasoning_effort": "low"} if model.startswith("openai/gpt-oss") else {}
+        for attempt in range(2):
+            try:
+                resp = _client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}, temperature=0, **kwargs)
+                return json.loads(resp.choices[0].message.content)
+            except RateLimitError as e:
+                msg = str(e)
+                if "per day" in msg or "TPD" in msg:
+                    print(f"[parser] {model}: daily token limit reached, trying next model")
+                    _exhausted.add(model)
+                    break
+                wait = _retry_after_seconds(msg)           # per-minute limit: wait it out once
+                if attempt == 0 and wait <= 90:
+                    time.sleep(wait + 1)
+                    continue
+                break
+            except Exception as e:                           # bad JSON, network, model unavailable
+                print(f"[parser] LLM call failed on {model}: {e}")
+                break
+    if all(m in _exhausted for m in [config.GROQ_MODEL, *config.GROQ_FALLBACK_MODELS]):
+        raise LLMExhausted("Groq daily token limit reached on all configured models; progress is saved, resume later.")
+    return None
+
+
+# ---------------------------------------------------------------- public entry point
+
+@dataclass
+class Parsed:
+    is_job: bool
+    company: str = ""
+    role: str = ""
+    status: str | None = None
+    req_id: str = ""
+    job_type: str = ""
+    via: str = "rules"
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def confident(self) -> bool:
+        return bool(self.company and self.status)
+
+
+def parse_email(subject: str, sender: str, body: str, use_llm: bool = True, extra_blocked: tuple = ()) -> Parsed:
+    if is_blocked(sender, subject, extra_blocked):
+        return Parsed(is_job=False, via="blocklist")
+
+    status = rule_status(subject, body, sender)
+    company = rule_company(subject, sender)
+    role = rule_role(subject)
+    ats = is_ats(sender)
+    update_subject = bool(re.search(
+        r"application (update|status)|update (on|about|regarding|for) (your|the|our)? ?(application|position|candidacy)|"
+        r"update on position|an update (from|on)", subject, re.I))
+    p = Parsed(
+        is_job=bool(status) or (ats and bool(company)) or (update_subject and bool(company)),
+        company=company, role=role, status=status,
+        req_id=find_req_id(f"{subject}\n{body[:1500]}"),
+    )
+
+    if not p.is_job and not _JOB_SIGNAL.search(f"{subject}\n{body[:1500]}"):
+        return p   # nothing recruiting-related anywhere: don't spend an LLM call on it
+    doubtful_applied = status == "Applied" and bool(_OUTCOME_HINT.search(f"{subject}\n{body[:2500]}"))
+    if doubtful_applied and not (use_llm and llm_available()):
+        p.status = None   # without the LLM, don't guess "Applied" for something that reads like a decision
+    if use_llm and llm_available() and (doubtful_applied or not (status and company and role)):
+        out = llm_parse(subject, sender, body)
+        if out:
+            p.via = "rules+llm"
+            if not out.get("is_job_related"):
+                p.is_job = False
+                return p
+            p.is_job = True
+            # rules win on status when they fired, except the weak "Applied" guess, which the LLM may overrule
+            llm_status = out.get("status") if out.get("status") in config.STATUSES else None
+            if p.status in (None, "Applied"):
+                p.status = llm_status or p.status
+            p.company = out.get("company") or p.company
+            p.role = p.role or out.get("role", "")
+
+    sender_name = _sender_parts(sender)[0]
+    if p.company and not ats and p.company.lower() == sender_name.lower() and re.fullmatch(r"[A-Z][\w.'-]+( [A-Z][\w.'-]+){1,2}", p.company):
+        # the "company" is just the sender's personal name (a recruiter replying in a thread): can't trust it
+        p.company, p.is_job = "", False
+    if p.company and (p.company.startswith("@") or "@" in p.company):
+        p.company = ""
+    p.role = clean_role(p.role, p.company)
+    p.job_type = guess_job_type(subject, p.role)
+    return p
