@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, contacts, db, followups, gmail, parser, scheduler, sync
+from . import config, contacts, db, digest, followups, gmail, importers, parser, scheduler, sync
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -65,9 +65,19 @@ class SplitRequest(BaseModel):
     role: str = ""
 
 
+class ImportRequest(BaseModel):
+    files: dict[str, str] = {}          # LinkedIn export: {"Connections.csv": "<csv text>", ...}
+    text: str = ""                      # spreadsheet CSV text
+    since: str | None = None            # LinkedIn: ignore outreach older than this (YYYY-MM-DD)
+    me: str | None = None               # LinkedIn: your name as it appears in messages.csv (auto-detected)
+    mapping: dict[str, str] = {}        # spreadsheet: override detected column mapping
+    apply: bool = False
+
+
 class SyncRequest(BaseModel):
     since: date | None = None
     until: date | None = None
+    reprocess_linkedin: bool = False     # re-read already-seen LinkedIn notices (to enrich contacts); safe, idempotent
 
 
 def _check_contact(t: str):
@@ -265,7 +275,7 @@ def start_sync(body: SyncRequest):
     since = body.since or (date.today() - timedelta(days=90))
     sync.state.reset()
     sync.state.running = True  # visible immediately to the first poll
-    threading.Thread(target=sync.run_sync, args=(since, body.until), daemon=True).start()
+    threading.Thread(target=sync.run_sync, args=(since, body.until, body.reprocess_linkedin), daemon=True).start()
     return {"started": True, "since": since.isoformat()}
 
 
@@ -273,7 +283,7 @@ def start_sync(body: SyncRequest):
 def sync_status():
     s = sync.state
     return {"running": s.running, "total": s.total, "done": s.done, "added": s.added, "updated": s.updated,
-            "ignored": s.ignored, "needs_review": s.review, "failed": s.failed, "error": s.error, "message": s.message}
+            "ignored": s.ignored, "needs_review": s.review, "failed": s.failed, "linkedin": s.linkedin, "error": s.error, "message": s.message}
 
 
 @app.get("/api/sync/last")
@@ -282,6 +292,46 @@ def last_sync():
     with db.session() as conn:
         row = conn.execute("SELECT value FROM meta WHERE key='last_sync'").fetchone()
     return {**(json.loads(row[0]) if row else {}), "auto_minutes": config.AUTO_SYNC_MINUTES}
+
+
+@app.post("/api/import/{kind}")
+def import_contacts(kind: str, body: ImportRequest):
+    """Preview (apply=false) or perform an import of outreach history. kind: linkedin | sheet"""
+    if kind == "linkedin":
+        plan, source = importers.plan_linkedin(body.files, body.since, body.me), "linkedin-import"
+    elif kind == "sheet":
+        plan, source = importers.plan_sheet(body.text, body.mapping), "sheet-import"
+    else:
+        raise HTTPException(404)
+    if not plan["people"]:
+        raise HTTPException(422, "Nothing importable found. " + (
+            "Include Invitations.csv and/or messages.csv (and Connections.csv for company/title) from LinkedIn's export."
+            if kind == "linkedin" else "Couldn't find a name column; check the CSV headers."))
+    with db.session() as conn:
+        summary = importers.summarize(conn, plan)
+        if body.apply:
+            summary["applied"] = importers.apply_plan(conn, plan, source)
+    return summary
+
+
+@app.get("/api/digest/status")
+def digest_status():
+    return {"enabled": config.DIGEST_ENABLED, "hour": config.DIGEST_HOUR, "send_permission": gmail.has_send_permission(),
+            "last": digest.last_digest()}
+
+
+@app.get("/api/digest/preview")
+def digest_preview():
+    d = digest.collect()
+    return {"empty": True} if d is None else {"empty": False, "subject": d["subject"], "text": d["text"]}
+
+
+@app.post("/api/digest/send-test")
+def digest_send_test():
+    r = digest.send_now(test=True)
+    if r["error"]:
+        raise HTTPException(409 if r["needs_permission"] else 500, r["error"])
+    return r
 
 
 @app.get("/api/export.csv")

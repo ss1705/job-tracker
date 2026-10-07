@@ -44,6 +44,29 @@ out → Reached out → Chat scheduled → Chatted → Referred → Closed*), a 
 application (linking one turns on that application's follow-up reminders). Reminders: *Reached out* with no reply after
 7 days, a thank-you nudge the day after a chat, a heads-up the day before a scheduled chat, plus any "Remind me on" date.
 
+### LinkedIn outreach (only people *you* reach out to)
+
+- **Responses, automatically:** each sync reads LinkedIn's notification emails. "*X accepted your invitation*" and
+  "*X just messaged you*" update the matching contact (stage → *Replied*, with the date and kind). An accepted invite from
+  someone not yet tracked is added, since only someone you invited can accept. Incoming connection requests and
+  messages from people you never contacted are ignored. People are matched by profile link, never by a bare first name.
+- **Your sent outreach:** LinkedIn doesn't email you when you send an invite or message, so use **Import…** on the
+  Contacts tab: LinkedIn's data export (`Invitations.csv`, `messages.csv`, `Connections.csv`) or your old spreadsheet (CSV).
+  Imports preview first and are idempotent. Only outreach you initiated is imported.
+- Extend the backfill range with a wide **Sync**; add `"reprocess_linkedin": true` to `POST /api/sync` to re-read seen notices.
+
+## Daily digest
+
+A short email to yourself each morning (at `DIGEST_HOUR`, default 8) listing new responses, people and applications to
+follow up with, and saved postings closing soon. Nothing to report = no email. It goes through Gmail so it reaches your
+Mac and iPhone; it needs one extra permission, granted once:
+
+```bash
+.venv/bin/python -m jobtracker.gmail      # consent screen: allow "send email on your behalf" (only ever sent to yourself)
+```
+
+The page's **Daily digest** card has a preview and a "Send test email" button.
+
 ## Auto-sync
 
 While the server runs it re-syncs Gmail every `AUTO_SYNC_MINUTES` (default 120; `0` turns it off), looking back

@@ -167,3 +167,198 @@ def test_roleless_receipts_on_different_days_stay_separate_and_can_be_split(env)
         assert new_id not in (rows[0]["id"], rows[1]["id"])
         with pytest.raises(ValueError):
             sync.split_events(c, new_id, [c.execute("SELECT id FROM events WHERE application_id=?", (new_id,)).fetchone()["id"]])  # can't empty it
+
+
+def test_digest_schedule_and_content():
+    from datetime import date, datetime, timezone
+    from jobtracker import digest
+    local = lambda h, d=7: datetime(2026, 10, d, h, 30).astimezone()
+    today = local(9).date().isoformat()
+    ago = lambda m: (datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert not digest.is_due(local(7), None, 8)                                       # before 8am
+    assert digest.is_due(local(8), None, 8)                                           # first check after 8am
+    assert not digest.is_due(local(9), {"date": today, "sent": True, "at": ago(0)}, 8)
+    assert not digest.is_due(local(9), {"date": today, "skipped": True, "at": ago(0)}, 8)
+    assert not digest.is_due(local(9), {"date": today, "needs_permission": True, "at": ago(0)}, 8)
+    assert not digest.is_due(local(9), {"date": today, "error": "boom", "at": ago(0)}, 8)   # failed just now: wait before retrying
+    assert digest.is_due(local(9, 8), {"date": today, "sent": True, "at": ago(0)}, 8)       # next day
+
+    assert digest.build([], [], [], [], date(2026, 10, 7)) is None                    # nothing to say, no email
+    d = digest.build(
+        [{"company": "Stripe", "role": "SWE", "follow_up_due": True, "follow_up_reason": "Applied 8 days ago, no response",
+          "contact_type": "Referral", "contact_name": "Priya", "deadline_days": None},
+         {"company": "Figma", "role": "", "follow_up_due": False, "follow_up_reason": "", "contact_type": "", "contact_name": "", "deadline_days": -2}],
+        [{"name": "Marcus", "company": "Datadog", "follow_up_due": True, "follow_up_reason": "Chatted 2 days ago: send a thank-you / follow-up"}],
+        [{"company": "Ramp", "role": "SWE", "type": "Interview", "received_at": "x"}],
+        [{"name": "Tom", "company": "Notion", "response_kind": "Accepted invite", "responded_at": "x"}],
+        date(2026, 10, 7))
+    assert d["count"] == 5 and "1 deadline" in d["subject"] and "2 new responses" in d["subject"] and "2 to follow up" in d["subject"]
+    assert "Interview: Ramp" in d["text"] and "overdue by 2 days" in d["text"] and "via Priya" in d["text"]
+    assert "Tom (Notion) accepted invite on LinkedIn" in d["text"] and "<script" not in d["html"]
+
+
+def test_outreach_records_and_responses(env):
+    db, sync = env
+    from jobtracker import outreach
+    with db.session() as c:
+        cid, created = outreach.record_outreach(c, name="Anurag Sharma", slug="anurag-sharma-1a2b", sent_at="2026-09-20", company="Stripe")
+        assert created
+        # same person again (matched by name, no slug) only enriches; earliest outreach date wins
+        cid2, created2 = outreach.record_outreach(c, name="anurag  sharma", sent_at="2026-09-18", title="SWE")
+        assert (cid2, created2) == (cid, False)
+        row = c.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchone()
+        assert (row["outreach_sent_at"], row["title"], row["stage"], row["ext_key"]) == ("2026-09-18", "SWE", "Reached out", "anurag-sharma-1a2b")
+
+        # accepted invite -> Replied, with when; replaying the same notice changes nothing
+        assert outreach.record_response(c, name="Anurag Sharma", when="2026-09-25", kind="Accepted invite")[1] == "updated"
+        assert outreach.record_response(c, name="Anurag Sharma", when="2026-09-25", kind="Accepted invite")[1] == "unchanged"
+        row = c.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchone()
+        assert (row["stage"], row["responded_at"], row["response_kind"]) == ("Replied", "2026-09-25", "Accepted invite")
+
+        # a later reply keeps the stage (never downgrades) and moves the response date
+        c.execute("UPDATE contacts SET stage='Chat scheduled' WHERE id=?", (cid,))
+        assert outreach.record_response(c, name="Anurag Sharma", when="2026-09-30", kind="Replied")[1] == "updated"
+        assert c.execute("SELECT stage, response_kind FROM contacts WHERE id=?", (cid,)).fetchone()[:] == ("Chat scheduled", "Replied")
+
+        # strangers: inbound messages are ignored, but an accepted invite can only be from someone you invited
+        assert outreach.record_response(c, name="Random Recruiter", kind="Replied") == (None, "ignored")
+        new_id, how = outreach.record_response(c, name="Priya Raman", when="2026-10-01", kind="Accepted invite", create_missing=True)
+        assert how == "created" and c.execute("SELECT stage, source FROM contacts WHERE id=?", (new_id,)).fetchone()[:] == ("Replied", "linkedin-email")
+
+
+def test_linkedin_email_recognition():
+    from jobtracker import outreach
+    base = {"sender": "Anurag via LinkedIn <invitations@linkedin.com>", "received_at": "2026-10-02T10:00:00",
+            "links": ["https://www.linkedin.com/comm/in/someone-else-9z8y?trk=x", "https://www.linkedin.com/comm/in/anurag-sharma-1a2b?midToken=1"]}
+    r = outreach.parse_linkedin_email({**base, "subject": "Anurag Sharma accepted your invitation, explore their network"})
+    assert (r["name"], r["kind"], r["slug"]) == ("Anurag Sharma", "Accepted invite", "anurag-sharma-1a2b")
+    r = outreach.parse_linkedin_email({**base, "sender": "LinkedIn <messaging-digest-noreply@linkedin.com>", "subject": "Anurag just messaged you"})
+    assert (r["name"], r["kind"]) == ("Anurag", "Replied")
+    assert outreach.parse_linkedin_email({**base, "subject": "I want to connect"}) is None                  # incoming request
+    assert outreach.parse_linkedin_email({**base, "subject": "116 people viewed your profile"}) is None
+    assert outreach.parse_linkedin_email({**base, "sender": "x@gmail.com", "subject": "Bob just messaged you"}) is None
+
+
+def test_first_name_only_emails_match_by_profile_not_by_name(env):
+    db, sync = env
+    from jobtracker import outreach
+    with db.session() as c:
+        outreach.record_outreach(c, name="Anurag Sharma", slug="anurag-sharma-1a2b", sent_at="2026-09-01")
+        # a different Anurag accepts: same first name, different profile -> a new contact, not Anurag Sharma
+        cid, how = outreach.record_response(c, name="Anurag", slug="anurag-shete-053294178", when="2026-09-24",
+                                            kind="Accepted invite", create_missing=True)
+        assert how == "created"
+        assert c.execute("SELECT name FROM contacts WHERE id=?", (cid,)).fetchone()[0] == "Anurag Shete"
+        # his later reply matches by slug
+        assert outreach.record_response(c, name="Anurag", slug="anurag-shete-053294178", when="2026-09-25", kind="Replied")[0] == cid
+        # a bare first name with no profile link and two Anurags is ambiguous: ignored, never guessed
+        assert outreach.record_response(c, name="Anurag", when="2026-09-26", kind="Replied") == (None, "ignored")
+        assert outreach.display_name("Vishwa", "vishwak2003") == "Vishwa"             # unsplittable slug: keep the given name
+
+
+LI_INVITES = """From,To,Sent At,Message,Direction,inviterProfileUrl,inviteeProfileUrl
+Me Myself,Anurag Shete,"9/20/26, 8:12 PM",Hi Anurag! Love your work.,OUTGOING,https://www.linkedin.com/in/me,https://www.linkedin.com/in/anurag-shete-053294178
+Me Myself,Priya Raman,"9/22/26, 9:00 AM",,OUTGOING,https://www.linkedin.com/in/me,https://www.linkedin.com/in/priya-raman-77
+Some Stranger,Me Myself,"9/23/26, 9:00 AM",,INCOMING,https://www.linkedin.com/in/stranger,https://www.linkedin.com/in/me
+"""
+LI_CONNECTIONS = """Notes:
+"When exporting your connection data, you may notice that some of the email addresses are missing."
+
+First Name,Last Name,URL,Email Address,Company,Position,Connected On
+Anurag,Shete,https://www.linkedin.com/in/anurag-shete-053294178,,Stripe,Software Engineer,25 Sep 2026
+Some,Stranger,https://www.linkedin.com/in/stranger,,Acme,CEO,24 Sep 2026
+"""
+LI_MESSAGES = """CONVERSATION ID,CONVERSATION TITLE,FROM,SENDER PROFILE URL,TO,RECIPIENT PROFILE URLS,DATE,SUBJECT,CONTENT,FOLDER
+c1,,Me Myself,https://www.linkedin.com/in/me,Tom Becker,https://www.linkedin.com/in/tom-becker-5,2026-09-10 14:00:00 UTC,,Hi Tom,SENT
+c1,,Tom Becker,https://www.linkedin.com/in/tom-becker-5,Me Myself,https://www.linkedin.com/in/me,2026-09-12 10:00:00 UTC,,Happy to chat,INBOX
+c2,,Cold Recruiter,https://www.linkedin.com/in/cold-recruiter,Me Myself,https://www.linkedin.com/in/me,2026-09-11 10:00:00 UTC,,We have a role,INBOX
+c3,,Me Myself,https://www.linkedin.com/in/me,Dana Ortiz,https://www.linkedin.com/in/dana-ortiz-9,2026-08-01 14:00:00 UTC,,Hello Dana,SENT
+"""
+
+
+def test_linkedin_export_import(env):
+    db, sync = env
+    from jobtracker import importers
+    files = {"Invitations.csv": LI_INVITES, "Connections.csv": LI_CONNECTIONS, "messages.csv": LI_MESSAGES}
+    plan = importers.plan_linkedin(files, since="2026-08-15")
+    names = {p["name"]: p for p in plan["people"]}
+    assert set(names) == {"Anurag Shete", "Priya Raman", "Tom Becker"}           # no stranger, no inbound recruiter, Dana too old
+    assert plan["skipped_incoming_invites"] == 1
+    a = names["Anurag Shete"]
+    assert (a["sent_at"], a["responded_at"], a["kind"], a["company"]) == ("2026-09-20", "2026-09-25", "Accepted invite", "Stripe")
+    assert names["Priya Raman"]["responded_at"] is None                              # invited, no answer (yet)
+    assert (names["Tom Becker"]["kind"], names["Tom Becker"]["responded_at"]) == ("Replied", "2026-09-12")
+
+    with db.session() as c:
+        s = importers.summarize(c, plan)
+        assert (s["total"], s["new"], s["existing"], s["with_response"]) == (3, 3, 0, 2)
+        assert importers.apply_plan(c, plan, "linkedin-import") == {"created": 3, "updated": 0, "responses": 2}
+        assert importers.apply_plan(c, plan, "linkedin-import") == {"created": 0, "updated": 3, "responses": 0}   # idempotent
+        rows = {r["name"]: r for r in c.execute("SELECT * FROM contacts")}
+        assert rows["Anurag Shete"]["stage"] == "Replied" and rows["Priya Raman"]["stage"] == "Reached out"
+        assert rows["Tom Becker"]["outreach_sent_at"] == "2026-09-10"
+
+
+def test_sheet_import(env):
+    db, sync = env
+    from jobtracker import importers
+    csv_text = ("Name,Company,Position,LinkedIn,Date Contacted,Status,Notes\n"
+                "Marcus Lee,Datadog,EM,https://linkedin.com/in/marcus-lee-1,03/05/2026,Had a coffee chat,Great convo\n"
+                "Aisha Khan,Ramp,Recruiter,,,Replied,\n"
+                "Tom Becker,Figma,SWE,,09/01/2026,No response,\n"
+                ",,,,,,\n")
+    plan = importers.plan_sheet(csv_text)
+    assert plan["mapping"]["name"] == "Name" and plan["mapping"]["date"] == "Date Contacted"
+    assert [(p["name"], p["stage"]) for p in plan["people"]] == [("Marcus Lee", "Chatted"), ("Aisha Khan", "Replied"), ("Tom Becker", "Reached out")]
+    with db.session() as c:
+        importers.apply_plan(c, plan, "sheet-import")
+        rows = {r["name"]: r for r in c.execute("SELECT * FROM contacts")}
+        assert rows["Marcus Lee"]["stage"] == "Chatted" and rows["Marcus Lee"]["ext_key"] == "marcus-lee-1"
+        assert rows["Marcus Lee"]["channel"] == "LinkedIn" and rows["Tom Becker"]["outreach_sent_at"] == "2026-09-01"
+
+
+def test_backfilled_responses_do_not_count_as_new_for_the_digest(env):
+    db, sync = env
+    from datetime import date, timedelta
+    from jobtracker import outreach
+    with db.session() as c:
+        old, recent = (date.today() - timedelta(days=40)).isoformat(), (date.today() - timedelta(days=1)).isoformat()
+        a, _ = outreach.record_response(c, name="Old Timer", slug="old-timer-1", when=old, kind="Accepted invite", create_missing=True)
+        b, _ = outreach.record_response(c, name="Fresh Face", slug="fresh-face-2", when=recent, kind="Accepted invite", create_missing=True)
+        logged = {r["id"]: r["response_logged_at"] for r in c.execute("SELECT id, response_logged_at FROM contacts")}
+    assert logged[a] is None and logged[b] is not None
+
+
+def test_profile_card_parsing_and_name_upgrade(env):
+    db, sync = env
+    from jobtracker import outreach
+    card = ("See Bharath Prakash’s connections, experience, and more\n Bharath has accepted your invitation \n Bharath Prakash \n"
+            " Actively seeking Co-op for Fall ’26 | USC ’26 | AI Engineering \n Message \n Suggestions from Bharath’s network \n Athish Raj Mohan \n")
+    r = outreach.parse_profile_card(card, "Bharath")
+    assert r["full_name"] == "Bharath Prakash" and r["headline"].startswith("Actively seeking Co-op") and r["company"] == ""
+    r2 = outreach.parse_profile_card("See Anu Rao’s connections, experience, and more\n Anu Rao \n MS CS @ USC | Software Engineer \n Message", "Anu")
+    assert (r2["headline"], r2["company"]) == ("MS CS @ USC | Software Engineer", "")      # a school is not an employer: no guessing
+    assert outreach.parse_profile_card("See Someone Else’s connections, experience, and more", "Bharath") == {}
+
+    with db.session() as c:     # a first-name-only contact (created before the card was parsed) gets repaired in place
+        cid, _ = outreach.record_response(c, name="Bharath", slug="bharathprakashusc", when="2026-09-17", kind="Accepted invite", create_missing=True)
+        assert c.execute("SELECT name FROM contacts WHERE id=?", (cid,)).fetchone()[0] == "Bharath"
+        outreach.record_response(c, name="Bharath Prakash", slug="bharathprakashusc", when="2026-09-17", kind="Accepted invite",
+                                 title="Actively seeking Co-op for Fall ’26")
+        row = c.execute("SELECT name, title FROM contacts WHERE id=?", (cid,)).fetchone()
+        assert (row["name"], row["title"]) == ("Bharath Prakash", "Actively seeking Co-op for Fall ’26")
+        assert c.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] == 1
+
+
+def test_first_name_only_contact_upgrades_instead_of_duplicating(env):
+    db, sync = env
+    from jobtracker import outreach
+    with db.session() as c:
+        a, _ = outreach.record_response(c, name="Ishaan", when="2026-09-14", kind="Accepted invite", create_missing=True)   # no profile link
+        b, how = outreach.record_response(c, name="Ishaan Singh", when="2026-09-14", kind="Accepted invite", create_missing=True)
+        assert (b, how) == (a, "unchanged") and c.execute("SELECT name FROM contacts").fetchone()[0] == "Ishaan Singh"
+        # two bare first names make it ambiguous: a new full-name contact is created rather than guessing
+        outreach.record_response(c, name="Sahil", when="2026-09-09", kind="Accepted invite", create_missing=True)
+        c.execute("INSERT INTO contacts (name, ext_key) VALUES ('Sahil', '')")
+        _, how = outreach.record_response(c, name="Sahil Patil", when="2026-09-09", kind="Accepted invite", create_missing=True)
+        assert how == "created"

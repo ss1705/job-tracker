@@ -27,5 +27,9 @@ FOLLOWUP_DAYS = int(os.getenv("FOLLOWUP_DAYS", "7"))
 FOLLOWUP_MAX_DAYS = int(os.getenv("FOLLOWUP_MAX_DAYS", "30"))
 CHECKIN_DAYS = int(os.getenv("CHECKIN_DAYS", "7"))
 CONTACT_TYPES = ["Referral", "Coffee chat", "Recruiter"]
-CONTACT_KINDS = ["Coffee chat", "Referral", "Recruiter", "Alum", "Other"]
-CONTACT_STAGES = ["To reach out", "Reached out", "Chat scheduled", "Chatted", "Referred", "Closed"]
+CONTACT_KINDS = ["Cold outreach", "Coffee chat", "Referral", "Recruiter", "Alum", "Other"]
+CONTACT_STAGES = ["To reach out", "Reached out", "Replied", "Chat scheduled", "Chatted", "Referred", "Closed"]
+# daily digest email (sent to yourself through Gmail; needs the send permission)
+DIGEST_ENABLED = os.getenv("DIGEST_ENABLED", "1") not in ("0", "false", "False", "")
+DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "8"))                      # local time; sent on the first check after this hour
+DIGEST_SEND_EMPTY = os.getenv("DIGEST_SEND_EMPTY", "0") in ("1", "true", "True")

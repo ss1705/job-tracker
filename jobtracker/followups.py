@@ -75,10 +75,17 @@ def contact_flags(c: dict, today: date) -> dict:
         when = "today" if chat == today else "tomorrow"
         out.update(due=True, reason=f"Chat {when}: prep your questions")
     elif stage == "Reached out":
-        ref = last or created
+        ref = last or _d(c.get("outreach_sent_at")) or created      # your latest contact, else when you first reached out
         waited = (today - ref).days if ref else 0
         if REACH_OUT_NUDGE_DAYS <= waited <= REACH_OUT_GIVE_UP_DAYS:
             out.update(due=True, reason=f"Reached out {waited} days ago, no reply")
+    elif stage == "Replied":
+        resp = _d(c.get("responded_at"))
+        if resp and not (last and last >= resp):                     # they responded and you haven't answered since
+            waited = (today - resp).days
+            if 2 <= waited <= THANK_YOU_WINDOW_DAYS:
+                what = (c.get("response_kind") or "responded").lower()
+                out.update(due=True, reason=f"They {what} {waited} days ago: reply / ask for a chat")
     elif stage == "Chatted" and chat:
         since = (today - chat).days
         thanked = bool(last and last >= chat)

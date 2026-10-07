@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS contacts (
     remind_on TEXT,                           -- manual reminder (a future date also snoozes the automatic ones)
     notes TEXT NOT NULL DEFAULT '',
     application_id INTEGER REFERENCES applications(id) ON DELETE SET NULL,
+    channel TEXT NOT NULL DEFAULT '',         -- LinkedIn / Email / ...
+    source TEXT NOT NULL DEFAULT 'manual',    -- manual / linkedin-import / linkedin-email / sheet-import
+    ext_key TEXT NOT NULL DEFAULT '',         -- LinkedIn profile slug, for matching
+    outreach_sent_at TEXT,                    -- when you first reached out (invite / message)
+    responded_at TEXT,                        -- when they last responded (accepted / replied)
+    response_kind TEXT NOT NULL DEFAULT '',   -- 'Accepted invite' / 'Replied'
+    response_logged_at TEXT,                  -- when the tracker noticed (drives the digest)
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -105,6 +112,13 @@ def init_db():
         for col, ddl in added.items():
             if col not in have:
                 conn.execute(f"ALTER TABLE applications ADD COLUMN {col} {ddl}")
+        have_c = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
+        added_c = {"channel": "TEXT NOT NULL DEFAULT ''", "source": "TEXT NOT NULL DEFAULT 'manual'", "ext_key": "TEXT NOT NULL DEFAULT ''",
+                   "outreach_sent_at": "TEXT", "responded_at": "TEXT", "response_kind": "TEXT NOT NULL DEFAULT ''",
+                   "response_logged_at": "TEXT"}
+        for col, ddl in added_c.items():
+            if col not in have_c:
+                conn.execute(f"ALTER TABLE contacts ADD COLUMN {col} {ddl}")
 
 
 _SUFFIXES = r"\b(inc|llc|ltd|corp|corporation|co|company|group|technologies|technology|holdings|services|people|labs|careers|the)\b"

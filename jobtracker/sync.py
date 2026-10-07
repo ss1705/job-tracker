@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from datetime import date
 
-from . import config, db, gmail
+from . import config, db, gmail, outreach
 from .parser import LLMExhausted, Parsed, is_receipt_subject, parse_email
 
 # lifecycle ranking used to decide the "current" status of an application
@@ -138,7 +138,7 @@ class SyncState:
     def reset(self):
         self.running = False
         self.total = self.done = 0
-        self.added = self.updated = self.ignored = self.review = self.failed = 0
+        self.added = self.updated = self.ignored = self.review = self.failed = self.linkedin = 0
         self.error = ""
         self.message = ""
 
@@ -146,7 +146,7 @@ class SyncState:
 state = SyncState()
 
 
-def run_sync(since: date, until: date | None = None):
+def run_sync(since: date, until: date | None = None, reprocess_linkedin: bool = False):
     if not state.lock.acquire(blocking=False):
         return
     try:
@@ -155,10 +155,12 @@ def run_sync(since: date, until: date | None = None):
         state.message = "Searching Gmail…"
         svc = gmail.service()
         ids = gmail.list_message_ids(svc, since, until)
+        ids += [i for i in gmail.list_linkedin_ids(svc, since, until) if i not in set(ids)]
         with db.session() as conn:
             seen = {r[0] for r in conn.execute("SELECT gmail_id FROM seen_messages")}
             extra_blocked = tuple(r[0] for r in conn.execute("SELECT pattern FROM blocked_senders"))
-        todo = [i for i in ids if i not in seen]
+        li_ids = set(gmail.list_linkedin_ids(svc, since, until)) if reprocess_linkedin else set()
+        todo = [i for i in ids if i not in seen or i in li_ids]
         state.total = len(todo)
         state.message = f"Processing {len(todo)} new emails (of {len(ids)} matches)…"
 
@@ -175,6 +177,19 @@ def run_sync(since: date, until: date | None = None):
                 state.done += 1
                 continue
             state.message = f"Processing {len(todo)} new emails (of {len(ids)} matches)…"
+            resp = outreach.parse_linkedin_email(msg)
+            if resp:       # someone you reached out to on LinkedIn accepted / replied
+                with db.session() as conn:
+                    _, how = outreach.record_response(
+                        conn, name=resp["full_name"] or resp["name"], slug=resp["slug"], when=local_date(msg["received_at"]),
+                        kind=resp["kind"], create_missing=resp["kind"] == "Accepted invite", link=resp["link"].split("?")[0],
+                        title=resp["title"], company=resp["company"])
+                    conn.execute("INSERT OR REPLACE INTO seen_messages (gmail_id, outcome) VALUES (?,?)",
+                                 (msg["id"], "linkedin" if how != "ignored" else "ignored"))
+                state.linkedin += how in ("created", "updated")
+                state.ignored += how == "ignored"
+                state.done += 1
+                continue
             try:
                 p = parse_email(msg["subject"], msg["sender"], msg["body"], extra_blocked=extra_blocked)
             except LLMExhausted:
@@ -211,7 +226,7 @@ def run_sync(since: date, until: date | None = None):
                 conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_sync', ?)", (json.dumps({
                     "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "since": since.isoformat(),
                     "added": state.added, "updated": state.updated, "ignored": state.ignored, "failed": state.failed,
-                    "needs_review": state.review, "processed": state.done, "total": state.total, "error": state.error,
+                    "needs_review": state.review, "linkedin": state.linkedin, "processed": state.done, "total": state.total, "error": state.error,
                 }),))
         except Exception as e:
             print(f"[sync] could not save sync summary: {e}")

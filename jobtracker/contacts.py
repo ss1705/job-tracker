@@ -9,8 +9,8 @@ from . import config, db, followups
 router = APIRouter(prefix="/api/contacts", tags=["contacts"])
 
 _EDITABLE = ("name", "company", "title", "kind", "stage", "link", "chat_date", "last_contacted_at",
-             "remind_on", "notes", "application_id")
-_DATES = ("chat_date", "last_contacted_at", "remind_on")
+             "remind_on", "notes", "application_id", "channel", "outreach_sent_at", "responded_at", "response_kind")
+_DATES = ("chat_date", "last_contacted_at", "remind_on", "outreach_sent_at", "responded_at")
 
 
 class NewContact(BaseModel):
@@ -24,6 +24,8 @@ class NewContact(BaseModel):
     remind_on: str | None = None
     notes: str = ""
     application_id: int | None = None
+    channel: str = ""
+    outreach_sent_at: str | None = None
 
 
 class ContactPatch(BaseModel):
@@ -38,6 +40,10 @@ class ContactPatch(BaseModel):
     remind_on: str | None = None
     notes: str | None = None
     application_id: int | None = None
+    channel: str | None = None
+    outreach_sent_at: str | None = None
+    responded_at: str | None = None
+    response_kind: str | None = None
 
 
 def _validate(fields: dict):

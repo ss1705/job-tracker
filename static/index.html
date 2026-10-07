@@ -110,6 +110,8 @@
   td.company small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
   a.ext { margin-left: 6px; font-size: 12px; font-weight: 400; }
   .rel { margin-left: 6px; font-size: 11px; font-weight: 600; color: var(--accent); }
+  pre.preview { margin: 12px 0 0; padding: 12px 14px; background: var(--surface-2); border-radius: 10px; white-space: pre-wrap; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); padding: 2px 6px; border-radius: 6px; user-select: all; }
   .dash { color: var(--muted); opacity: .6; }
   .type-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
 
@@ -165,6 +167,7 @@
     <div class="row">
       <a href="/api/export.csv">Export CSV</a>
       <button class="primary" id="addBtn">+ Add application</button>
+      <button id="importBtn" hidden>Import…</button>
       <button class="primary" id="addContactBtn" hidden>+ Add contact</button>
     </div>
   </header>
@@ -216,12 +219,23 @@
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Company</th><th>Kind</th><th>Stage</th><th>Chat</th><th>Last contact</th></tr></thead>
+        <thead><tr><th>Name</th><th>Company</th><th>Kind</th><th>Stage</th><th>Reached out</th><th>Response</th></tr></thead>
         <tbody id="cRows"></tbody>
       </table>
       <div class="empty muted" id="cEmpty" hidden>No contacts yet. Add the people you’ve had coffee chats with, referrals and recruiters, and get reminded to follow up.</div>
     </div>
   </div>
+
+  <section class="card" id="digestCard" style="margin-top:20px">
+    <div class="row">
+      <strong>Daily digest</strong>
+      <span id="digestStatus" class="muted" style="font-size:13px"></span>
+      <span style="flex:1"></span>
+      <button id="digestPreviewBtn">Preview</button>
+      <button id="digestTestBtn">Send test email</button>
+    </div>
+    <pre class="preview" id="digestPreview" hidden></pre>
+  </section>
 </main>
 
 <dialog id="addDlg">
@@ -259,6 +273,27 @@
       <button class="primary" value="ok">Add</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="importDlg" style="width:min(560px,94vw)">
+  <h3>Import outreach history</h3>
+  <label>Source
+    <select id="impKind"><option value="linkedin">LinkedIn data export</option><option value="sheet">Spreadsheet (CSV)</option></select></label>
+  <div id="impLinkedin">
+    <p class="muted" style="margin:10px 0 0;font-size:13px">On LinkedIn: <b>Settings → Data privacy → Get a copy of your data</b>, request the archive (or Connections + Messages), then pick the files <b>Invitations.csv</b>, <b>messages.csv</b> and <b>Connections.csv</b> from the download. Only people <b>you</b> reached out to are imported; incoming requests and conversations others started are skipped.</p>
+    <label>CSV files<input type="file" id="impFiles" accept=".csv" multiple></label>
+    <label>Only outreach since<input type="date" id="impSince"></label>
+  </div>
+  <div id="impSheet" hidden>
+    <p class="muted" style="margin:10px 0 0;font-size:13px">In Google Sheets: <b>File → Download → CSV</b>. Columns are detected automatically (name, company, title, LinkedIn link, date contacted, status, notes).</p>
+    <label>CSV file<input type="file" id="impSheetFile" accept=".csv"></label>
+  </div>
+  <div id="impResult" style="margin-top:14px;font-size:13px"></div>
+  <div class="actions">
+    <button type="button" id="impCancel">Close</button>
+    <button type="button" id="impPreview">Preview</button>
+    <button type="button" class="primary" id="impApply" disabled>Import</button>
+  </div>
 </dialog>
 
 <script>
@@ -449,7 +484,7 @@ async function poll() {
   msg.className = s.error ? "err" : "muted";
   msg.textContent = s.error || (s.running
     ? `${s.message} ${s.done}/${s.total}`
-    : s.message === "Done" ? `Done: ${s.added} new, ${s.updated} updated, ${s.ignored} ignored, ${s.needs_review} to review` +
+    : s.message === "Done" ? `Done: ${s.added} new, ${s.updated} updated, ${s.ignored} ignored, ${s.needs_review} to review` + (s.linkedin ? `, ${s.linkedin} LinkedIn response${s.linkedin > 1 ? "s" : ""}` : "") +
         (s.failed ? `, ${s.failed} failed (sync again to retry)` : "") : "");
   $("#syncBtn").disabled = s.running;
   if (s.running) { setTimeout(poll, 1200); if (s.done % 10 === 0) load(); }
@@ -481,7 +516,7 @@ async function showLastSync() {
   if (!l || !l.at) { el.className = "sync-note"; el.textContent = "Not synced yet." + auto; return; }
   const mins = Math.max(0, Math.round((Date.now() - new Date(l.at)) / 60000));
   const when = mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)}h ago` : `${Math.round(mins / 1440)}d ago`;
-  const detail = `${l.added} new, ${l.updated} updated, ${l.needs_review} to review` + (l.failed ? `, ${l.failed} failed` : "");
+  const detail = `${l.added} new, ${l.updated} updated, ${l.needs_review} to review` + (l.linkedin ? `, ${l.linkedin} LinkedIn response${l.linkedin > 1 ? "s" : ""}` : "") + (l.failed ? `, ${l.failed} failed` : "");
   el.className = "sync-note" + (l.error ? " err" : "");
   el.textContent = l.error
     ? `Last sync ${when} stopped early (${l.processed}/${l.total} processed): ${l.error}`
@@ -490,9 +525,9 @@ async function showLastSync() {
 setInterval(() => { if (!document.hidden) { showLastSync(); load(); loadContacts(); } }, 60000);   // pick up background syncs
 
 // ---------------------------------------------------------------- contacts
-const KINDS = ["Coffee chat", "Referral", "Recruiter", "Alum", "Other"];
-const CSTAGES = ["To reach out", "Reached out", "Chat scheduled", "Chatted", "Referred", "Closed"];
-const STAGE_COLOR = { "To reach out": "Saved", "Reached out": "Applied", "Chat scheduled": "OA", "Chatted": "Interview", "Referred": "Offer", "Closed": "Withdrawn" };
+const KINDS = ["Cold outreach", "Coffee chat", "Referral", "Recruiter", "Alum", "Other"];
+const CSTAGES = ["To reach out", "Reached out", "Replied", "Chat scheduled", "Chatted", "Referred", "Closed"];
+const STAGE_COLOR = { "To reach out": "Saved", "Reached out": "Applied", "Replied": "Interview", "Chat scheduled": "OA", "Chatted": "Offer", "Referred": "Offer", "Closed": "Withdrawn" };
 let contacts = [], cFilter = new URLSearchParams(location.hash.slice(1)).get("cfilter") || "all", openCid = +new URLSearchParams(location.hash.slice(1)).get("contact") || null;
 
 const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -535,6 +570,16 @@ function visibleContacts() {
   return list;
 }
 
+function responseCell(c) {
+  if (c.responded_at) return `<span style="color:var(--Interview);font-weight:600">${esc(c.response_kind || "Responded")}</span> · ${fmt(c.responded_at)}`;
+  if (c.chat_date && ["Chat scheduled", "Chatted"].includes(c.stage)) return `Chat ${fmt(c.chat_date)}${relChat(c.chat_date) ? `<span class="rel">${relChat(c.chat_date)}</span>` : ""}`;
+  if (c.stage === "Reached out" && (c.outreach_sent_at || c.last_contacted_at)) {
+    const d = -dayDiff(c.last_contacted_at || c.outreach_sent_at);
+    return `no reply yet <span class="rel" style="color:var(--muted)">${d <= 0 ? "today" : d + "d"}</span>`;
+  }
+  return DASH;
+}
+
 function renderContacts() {
   const list = visibleContacts();
   $("#cEmpty").hidden = contacts.length > 0;
@@ -545,8 +590,8 @@ function renderContacts() {
       <td><span class="type-tag">${esc(c.kind)}</span></td>
       <td><select class="status" aria-label="Stage" data-cid="${c.id}" style="--c:var(--${STAGE_COLOR[c.stage]})">
         ${CSTAGES.map(s => `<option ${s === c.stage ? "selected" : ""}>${s}</option>`).join("")}</select></td>
-      <td class="date">${c.chat_date ? fmt(c.chat_date) : DASH}${relChat(c.chat_date) ? `<span class="rel">${relChat(c.chat_date)}</span>` : ""}</td>
-      <td class="date">${agoDate(c.last_contacted_at)}</td>
+      <td class="date">${c.outreach_sent_at ? fmt(c.outreach_sent_at) : DASH}${c.channel ? `<span class="rel" style="color:var(--muted)">${esc(c.channel)}</span>` : ""}</td>
+      <td class="date">${responseCell(c)}</td>
     </tr>${c.id === openCid ? `<tr class="detail"><td colspan="6">${contactDetail(c)}</td></tr>` : ""}`).join("");
   if (!list.length && contacts.length) $("#cRows").innerHTML = '<tr><td colspan="6" class="empty muted">No contacts match these filters.</td></tr>';
 }
@@ -561,6 +606,10 @@ function contactDetail(c) {
       <input data-k="link" value="${esc(c.link)}" placeholder="Profile link" aria-label="Profile link">
       <label class="field">Kind<select data-k="kind">${opts(KINDS, c.kind)}</select></label>
       <label class="field">Related application<select data-k="application_id">${appOptions(c.application_id)}</select></label>
+      <label class="field">Channel<select data-k="channel">${["", "LinkedIn", "Email", "In person", "Other"].map(v => `<option ${v === c.channel ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+      <label class="field">Reached out on<input type="date" data-k="outreach_sent_at" value="${esc((c.outreach_sent_at || "").slice(0, 10))}"></label>
+      <label class="field">They responded on<input type="date" data-k="responded_at" value="${esc((c.responded_at || "").slice(0, 10))}"></label>
+      <label class="field">Response<select data-k="response_kind">${["", "Accepted invite", "Replied"].map(v => `<option ${v === c.response_kind ? "selected" : ""}>${v}</option>`).join("")}</select></label>
       <label class="field">Chat date<input type="date" data-k="chat_date" value="${esc((c.chat_date || "").slice(0, 10))}"></label>
       <label class="field">Remind me on<input type="date" data-k="remind_on" value="${esc((c.remind_on || "").slice(0, 10))}"></label>
       <textarea class="wide" data-k="notes" placeholder="Notes: what you talked about, asks, next steps…" aria-label="Notes">${esc(c.notes)}</textarea>
@@ -623,18 +672,83 @@ $("#contactForm").addEventListener("submit", async e => {
   e.target.reset(); await loadContacts(); await load();
 });
 
+// import dialog
+const sixMonthsAgo = new Date(Date.now() - 183 * 864e5); $("#impSince").value = sixMonthsAgo.toISOString().slice(0, 10);
+const impBody = async apply => {
+  const kind = $("#impKind").value;
+  if (kind === "linkedin") {
+    const files = {}; for (const f of $("#impFiles").files) files[f.name] = await f.text();
+    return { kind, body: { files, since: $("#impSince").value || null, apply } };
+  }
+  const f = $("#impSheetFile").files[0];
+  return { kind, body: { text: f ? await f.text() : "", apply } };
+};
+$("#impKind").onchange = () => { const li = $("#impKind").value === "linkedin"; $("#impLinkedin").hidden = !li; $("#impSheet").hidden = li; $("#impResult").innerHTML = ""; $("#impApply").disabled = true; };
+$("#importBtn").onclick = () => { $("#impResult").innerHTML = ""; $("#impApply").disabled = true; $("#importDlg").showModal(); };
+$("#impCancel").onclick = () => $("#importDlg").close();
+$("#impPreview").onclick = async () => {
+  const out = $("#impResult"); out.className = "muted"; out.textContent = "Reading…";
+  try {
+    const { kind, body } = await impBody(false);
+    const r = await api(`/api/import/${kind}`, { method: "POST", body: JSON.stringify(body) });
+    const extra = [r.skipped_incoming_invites ? `${r.skipped_incoming_invites} incoming invites skipped` : "", kind === "sheet" && r.mapping ? "columns: " + Object.entries(r.mapping).map(([k, v]) => `${k}←${v}`).join(", ") : ""].filter(Boolean).join(" · ");
+    out.className = "";
+    out.innerHTML = `<b>${r.total} people</b>: ${r.new} new, ${r.existing} already tracked, ${r.with_response} with a response.${extra ? `<div class="muted" style="margin-top:4px">${esc(extra)}</div>` : ""}
+      <table style="margin-top:8px;min-width:0"><tbody>${r.sample.map(p => `<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.company)}</td><td class="date">${p.sent_at ? fmt(p.sent_at) : "—"}</td><td class="muted">${esc(p.response)}</td></tr>`).join("")}</tbody></table>
+      ${r.total > r.sample.length ? `<div class="muted" style="margin-top:4px">…and ${r.total - r.sample.length} more</div>` : ""}`;
+    $("#impApply").disabled = false;
+  } catch (err) { out.className = "err"; out.textContent = err.message; $("#impApply").disabled = true; }
+};
+$("#impApply").onclick = async () => {
+  const out = $("#impResult"); $("#impApply").disabled = true;
+  try {
+    const { kind, body } = await impBody(true);
+    const r = await api(`/api/import/${kind}`, { method: "POST", body: JSON.stringify(body) });
+    out.className = ""; out.innerHTML = `<b>Imported.</b> ${r.applied.created} added, ${r.applied.updated} updated, ${r.applied.responses} responses recorded.`;
+    await loadContacts(); await load();
+  } catch (err) { out.className = "err"; out.textContent = err.message; }
+};
+
 // tabs
 function setTab(tab) {
   const contactsTab = tab === "contacts";
   $("#appsView").hidden = contactsTab; $("#contactsView").hidden = !contactsTab;
-  $("#addBtn").hidden = contactsTab; $("#addContactBtn").hidden = !contactsTab;
+  $("#addBtn").hidden = contactsTab; $("#addContactBtn").hidden = !contactsTab; $("#importBtn").hidden = !contactsTab;
   document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
   store.set("tab", tab);
 }
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
 setTab(new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps");
+if (new URLSearchParams(location.hash.slice(1)).get("import")) $("#importBtn").click();
 
-load().then(() => { poll(); loadContacts(); }); loadBlocked(); showLastSync();
+// ---------------------------------------------------------------- daily digest
+async function loadDigest() {
+  const d = await api("/api/digest/status").catch(() => null), el = $("#digestStatus");
+  if (!d) return;
+  if (!d.enabled) { el.innerHTML = "Off (set DIGEST_ENABLED=1 in .env to turn it on)."; return; }
+  if (!d.send_permission) {
+    el.innerHTML = 'Needs a one-time permission to email you. In a terminal run: <code>.venv/bin/python -m jobtracker.gmail</code>';
+    return;
+  }
+  const l = d.last;
+  const last = !l ? "" : l.sent ? ` Last sent ${fmt(l.date)} (${l.count} item${l.count === 1 ? "" : "s"}).` : l.skipped ? ` Last check ${fmt(l.date)}: nothing to report.` : l.error ? ` Last attempt failed: ${esc(l.error)}` : "";
+  el.innerHTML = `Emails you at ${d.hour}:00 each morning when something needs attention.${last}`;
+}
+$("#digestPreviewBtn").onclick = async () => {
+  const box = $("#digestPreview");
+  if (!box.hidden) { box.hidden = true; return; }
+  const p = await api("/api/digest/preview");
+  box.textContent = p.empty ? "Nothing to report today, so no email would be sent." : `${p.subject}\n\n${p.text}`;
+  box.hidden = false;
+};
+$("#digestTestBtn").onclick = async () => {
+  const btn = $("#digestTestBtn"); btn.disabled = true; const label = btn.textContent; btn.textContent = "Sending…";
+  try { const r = await api("/api/digest/send-test", { method: "POST" }); $("#digestStatus").textContent = `Test email sent to ${r.to}.`; }
+  catch (err) { $("#digestStatus").textContent = err.message; }
+  btn.disabled = false; btn.textContent = label;
+};
+
+load().then(() => { poll(); loadContacts(); }); loadBlocked(); showLastSync(); loadDigest();
 </script>
 </body>
 </html>

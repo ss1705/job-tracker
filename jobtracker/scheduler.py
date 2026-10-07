@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from . import config, db, gmail, sync
+from . import config, db, digest, gmail, sync
 
 ERROR_BACKOFF_MINUTES = 60
 STARTUP_DELAY_SECONDS = 20
@@ -35,7 +35,7 @@ def _loop():
     time.sleep(STARTUP_DELAY_SECONDS)
     while True:
         try:
-            if not sync.state.running and is_due(_last_sync(), datetime.now(timezone.utc), config.AUTO_SYNC_MINUTES):
+            if config.AUTO_SYNC_MINUTES > 0 and not sync.state.running and is_due(_last_sync(), datetime.now(timezone.utc), config.AUTO_SYNC_MINUTES):
                 gmail.authorize()  # raises AuthRequired when not signed in -> skip quietly
                 since = date.today() - timedelta(days=config.AUTO_SYNC_LOOKBACK_DAYS)
                 print(f"[auto-sync] syncing since {since}")
@@ -44,6 +44,12 @@ def _loop():
             pass
         except Exception as e:
             print(f"[auto-sync] error: {type(e).__name__}: {e}")
+        try:
+            if config.DIGEST_ENABLED and digest.is_due(digest.local_now(), digest.last_digest(), config.DIGEST_HOUR):
+                r = digest.send_now()
+                print(f"[digest] {'sent to ' + r.get('to', '') if r['sent'] else 'skipped (nothing to report)' if r['skipped'] else 'not sent: ' + r['error']}")
+        except Exception as e:
+            print(f"[digest] error: {type(e).__name__}: {e}")
         time.sleep(CHECK_EVERY_SECONDS)
 
 
@@ -52,7 +58,7 @@ _started = False
 
 def start():
     global _started
-    if _started or config.AUTO_SYNC_MINUTES <= 0:
+    if _started or (config.AUTO_SYNC_MINUTES <= 0 and not config.DIGEST_ENABLED):
         return
     _started = True
     threading.Thread(target=_loop, daemon=True, name="auto-sync").start()
