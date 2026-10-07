@@ -54,6 +54,9 @@ application (linking one turns on that application's follow-up reminders). Remin
   LinkedIn (and from the LinkedIn export import) land in **To sort**: choose a kind (Cold outreach, Coffee chat, Referral,
   Recruiter, Alum, Friend / colleague, Other) to keep them, or **Ignore** to remove them for good. Unsorted people get no
   reminders and appear in the digest only as an "N to sort" line. Kept people still update automatically.
+- **Spreadsheets:** the importer matches columns by name (name, company, "Role/Title", LinkedIn URL, dates, status, notes,
+  "Referral given?"), maps statuses (*Not contacted → To reach out*, *Messaged → Reached out*, *Replied → Replied*) and keeps any
+  other columns (priority, hook, next step…) as labelled lines in the contact's notes. Sheet contacts skip the To sort step.
 - **Your sent outreach:** LinkedIn doesn't email you when you send an invite or message, so use **Import…** on the
   Contacts tab: LinkedIn's data export (`Invitations.csv`, `messages.csv`, `Connections.csv`) or your old spreadsheet (CSV).
   Imports preview first and are idempotent. Only outreach you initiated is imported.

@@ -362,3 +362,46 @@ def test_first_name_only_contact_upgrades_instead_of_duplicating(env):
         c.execute("INSERT INTO contacts (name, ext_key) VALUES ('Sahil', '')")
         _, how = outreach.record_response(c, name="Sahil Patil", when="2026-09-09", kind="Accepted invite", create_missing=True)
         assert how == "created"
+
+
+def test_sheet_import_networking_crm_layout(env):
+    db, sync = env
+    from jobtracker import importers
+    csv_text = (
+        "Name,Company,Role/Title,Role type,LinkedIn URL,Priority,Connection hook,Hook type,Status,Date first contacted,Date last touch,"
+        "Message sent (summary),Notes / what they said,Next step,Referral given?\n"
+        "Ann Lee,Pinterest,Data Scientist,IC Engineer,https://www.linkedin.com/in/ann-lee/,,,Cold/no hook,Not contacted,,,,,,\n"
+        "Bo Chan,Spotify,Data Engineer,IC Engineer,https://www.linkedin.com/in/bo-chan-9/,High,Same project,Project relevance,Messaged,09/20/2026,09/27/2026,Asked about team,,Follow up Friday,\n"
+        "Cy Dunn,Apple Music,MLE,Senior/Lead Engineer,,,,,Replied,,,,Said to apply online,,Yes\n")
+    plan = importers.plan_sheet(csv_text)
+    m = plan["mapping"]
+    assert (m["title"], m["link"], m["notes"], m["date"], m["last_touch"], m["status"]) == (
+        "Role/Title", "LinkedIn URL", "Notes / what they said", "Date first contacted", "Date last touch", "Status")
+    assert "Role type" in plan["extra_columns"] and "Role/Title" not in plan["extra_columns"]
+    by = {p["name"]: p for p in plan["people"]}
+    assert by["Ann Lee"]["stage"] == "To reach out" and by["Bo Chan"]["stage"] == "Reached out" and by["Cy Dunn"]["stage"] == "Referred"
+    assert by["Bo Chan"]["title"] == "Data Engineer" and by["Bo Chan"]["last_touch"] == "2026-09-27"
+    assert "Priority: High" in by["Bo Chan"]["notes"] and "Next step: Follow up Friday" in by["Bo Chan"]["notes"] and "Hook type: Project relevance" in by["Bo Chan"]["notes"]
+    assert by["Cy Dunn"]["notes"].startswith("Said to apply online")
+
+    with db.session() as c:
+        importers.apply_plan(c, plan, "sheet-import")
+        rows = {r["name"]: r for r in c.execute("SELECT * FROM contacts")}
+    assert rows["Ann Lee"]["stage"] == "To reach out" and rows["Ann Lee"]["needs_triage"] == 0 and rows["Ann Lee"]["ext_key"] == "ann-lee"
+    assert (rows["Bo Chan"]["outreach_sent_at"], rows["Bo Chan"]["last_contacted_at"], rows["Bo Chan"]["stage"]) == ("2026-09-20", "2026-09-27", "Reached out")
+    assert rows["Cy Dunn"]["stage"] == "Referred"
+
+
+def test_sheet_import_marks_existing_linkedin_people_as_sorted(env):
+    db, sync = env
+    from jobtracker import importers, outreach
+    with db.session() as c:
+        outreach.record_response(c, name="Nimita Singh", slug="nimita-singh-1", when="2026-08-14", kind="Replied",
+                                 create_missing=True, source="linkedin-email")
+        assert c.execute("SELECT needs_triage FROM contacts").fetchone()[0] == 1
+        plan = importers.plan_sheet("Name,Company,LinkedIn URL,Status\nNimita Singh,Apple Music,https://www.linkedin.com/in/nimita-singh-1,Replied\n")
+        assert importers.summarize(c, plan)["existing"] == 1
+        importers.apply_plan(c, plan, "sheet-import")
+        row = c.execute("SELECT needs_triage, company, stage FROM contacts").fetchone()
+        assert (row["needs_triage"], row["company"], row["stage"]) == (0, "Apple Music", "Replied")
+        assert c.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] == 1

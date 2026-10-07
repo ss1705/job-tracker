@@ -11,3 +11,6 @@ tests/labeled_emails.csv
 .venv/
 __pycache__/
 .pytest_cache/
+
+# personal exports and contact lists
+*.csv

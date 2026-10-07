@@ -126,30 +126,42 @@ def plan_linkedin(files: dict[str, str], since: str | None = None, me: str | Non
 _SYNONYMS = {
     "name": ("name", "full name", "contact", "person", "contact name"),
     "company": ("company", "organization", "organisation", "employer", "org", "firm"),
-    "title": ("title", "position", "role", "job title", "their title"),
-    "link": ("linkedin", "linkedin url", "linkedin profile", "profile", "url", "link", "profile link"),
-    "kind": ("type", "kind", "relationship", "category"),
-    "date": ("date", "date contacted", "contacted", "reached out", "outreach date", "date reached out", "first contacted", "sent"),
-    "status": ("status", "stage", "response", "reply", "replied?", "replied", "outcome"),
-    "notes": ("notes", "note", "comments", "comment", "details", "next steps"),
+    "title": ("title", "role title", "position", "job title", "their title", "role"),
+    "link": ("linkedin url", "linkedin", "linkedin profile", "profile", "profile link", "url", "link"),
+    "kind": ("kind", "relationship", "category", "contact type"),
+    "date": ("date first contacted", "date contacted", "first contacted", "date", "contacted", "reached out",
+             "outreach date", "date reached out", "sent"),
+    "last_touch": ("date last touch", "last touch", "last contacted", "last contact", "date last contacted", "last touchpoint"),
+    "status": ("status", "stage", "response", "reply", "replied", "outcome"),
+    "notes": ("notes what they said", "notes", "note", "comments", "comment", "details"),
+    "referral": ("referral given", "referred", "referral"),
 }
 
 
+def _norm_header(h: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (h or "").lower())).strip()
+
+
 def detect_mapping(headers: list[str]) -> dict:
-    low = {h.strip().lower(): h for h in headers if h}
-    out = {}
+    """field -> original header, matching on normalised names ("Notes / what they said" -> "notes what they said").
+    Each header is used for at most one field."""
+    norm = {_norm_header(h): h for h in headers if h}
+    out, used = {}, set()
     for field, names in _SYNONYMS.items():
         for n in names:
-            if n in low:
-                out[field] = low[n]
+            if n in norm and norm[n] not in used:
+                out[field] = norm[n]
+                used.add(norm[n])
                 break
-    if "name" not in out and "first name" in low:
-        out["name"] = "first name"
+    if "name" not in out and "first name" in norm:
+        out["name"] = norm["first name"]
     return out
 
 
 def _stage_from_status(text: str, has_date: bool) -> str:
     t = text.lower()
+    if re.search(r"not (yet )?(contacted|messaged|reached)|to contact|to do|todo|planned|queued|haven.?t|not started|^no$", t):
+        return "To reach out"
     if re.search(r"refer", t):
         return "Referred"
     if re.search(r"chat(ted)?\b|coffee|call|met\b|spoke|talked|zoom", t) and not re.search(r"schedul|upcoming|booked", t):
@@ -164,27 +176,34 @@ def _stage_from_status(text: str, has_date: bool) -> str:
 
 
 def plan_sheet(text: str, mapping: dict | None = None) -> dict:
-    text = text.lstrip("﻿")
+    text = text.lstrip("\ufeff")
     rows = list(csv.DictReader(io.StringIO(text)))
     headers = list(rows[0].keys()) if rows else []
     m = {**detect_mapping(headers), **(mapping or {})}
+    mapped = set(m.values()) | {h for h in headers if _norm_header(h) in ("first name", "last name")}
+    extras = [h for h in headers if h and h not in mapped]          # columns we don't model: kept as labelled lines in notes
+
+    def cell(r, field):
+        return (r.get(m.get(field, ""), "") or "").strip()
+
     people = []
     for r in rows:
-        name = (r.get(m.get("name", ""), "") or "").strip()
-        if not name and "first name" in {h.lower() for h in headers}:
+        name = cell(r, "name")
+        if not name and "first name" in {_norm_header(h) for h in headers}:
             name = f"{_get(r, 'first name')} {_get(r, 'last name')}".strip()
         if not name:
             continue
-        link = (r.get(m.get("link", ""), "") or "").strip()
-        sent = parse_date(r.get(m.get("date", ""), ""))
-        status = (r.get(m.get("status", ""), "") or "").strip()
-        kind = (r.get(m.get("kind", ""), "") or "").strip()
-        kind = next((k for k in config.CONTACT_KINDS if k.lower() == kind.lower()), "Cold outreach")
-        people.append({"name": name, "slug": outreach.slug_from_url(link), "company": (r.get(m.get("company", ""), "") or "").strip(),
-                       "title": (r.get(m.get("title", ""), "") or "").strip(), "sent_at": sent, "responded_at": None, "kind": "",
-                       "notes": (r.get(m.get("notes", ""), "") or "").strip(), "link": link, "contact_kind": kind,
-                       "stage": _stage_from_status(status, bool(sent)), "channel": "LinkedIn" if "linkedin" in link.lower() else ""})
-    return {"kind": "sheet", "people": people, "mapping": m, "headers": headers}
+        link, sent = cell(r, "link"), parse_date(cell(r, "date"))
+        kind = next((k for k in config.CONTACT_KINDS if k.lower() == cell(r, "kind").lower()), "Cold outreach")
+        stage = _stage_from_status(cell(r, "status"), bool(sent))
+        if re.match(r"(?i)\s*(y|yes|true|x|✓|given|received)", cell(r, "referral")):
+            stage = "Referred"
+        notes = "\n".join(x for x in [cell(r, "notes")] + [f"{h}: {(r.get(h) or '').strip()}" for h in extras if (r.get(h) or "").strip()] if x)
+        people.append({"name": name, "slug": outreach.slug_from_url(link), "company": cell(r, "company"), "title": cell(r, "title"),
+                       "sent_at": sent, "last_touch": parse_date(cell(r, "last_touch")), "responded_at": None, "kind": "",
+                       "notes": notes, "link": link, "contact_kind": kind, "stage": stage,
+                       "channel": "LinkedIn" if "linkedin" in link.lower() else ""})
+    return {"kind": "sheet", "people": people, "mapping": m, "headers": headers, "extra_columns": extras}
 
 
 # ---------------------------------------------------------------- applying a plan
@@ -204,8 +223,15 @@ def apply_plan(conn, plan: dict, source: str) -> dict:
             _, how = outreach.record_response(conn, name=p["name"], slug=p["slug"], when=p["responded_at"],
                                               kind=p["kind"] or "Replied", create_missing=False, source=source)
             responses += how == "updated"
-        stage = p.get("stage")            # spreadsheet: a stated stage moves the contact forward, never back
-        if stage and stage != "Reached out":
+        if source == "sheet-import":     # being in your own CRM means you've already decided to track them
+            conn.execute("UPDATE contacts SET needs_triage=0 WHERE id=?", (cid,))
+        if p.get("last_touch"):
+            conn.execute("UPDATE contacts SET last_contacted_at = CASE WHEN last_contacted_at IS NULL OR last_contacted_at < ? THEN ? ELSE last_contacted_at END WHERE id=?",
+                         (p["last_touch"], p["last_touch"], cid))
+        stage = p.get("stage")            # spreadsheet: a new contact takes the sheet's stage as is; an existing one only moves forward
+        if stage and was_created:
+            conn.execute("UPDATE contacts SET stage=? WHERE id=?", (stage, cid))
+        elif stage and stage != "Reached out":
             rank = {s: i for i, s in enumerate(config.CONTACT_STAGES)}
             cur = conn.execute("SELECT stage FROM contacts WHERE id=?", (cid,)).fetchone()[0]
             if stage == "Closed" or (cur != "Closed" and rank[stage] > rank[cur]):
@@ -225,5 +251,5 @@ def summarize(conn, plan: dict) -> dict:
     sample = [{"name": p["name"], "company": p["company"], "sent_at": p["sent_at"],
                "response": (p["kind"] + (f" {p['responded_at']}" if p.get("responded_at") else "")).strip() or p.get("stage", "")}
               for p in plan["people"][:12]]
-    extra = {k: plan[k] for k in ("skipped_incoming_invites", "files_found", "mapping", "headers") if k in plan}
+    extra = {k: plan[k] for k in ("skipped_incoming_invites", "files_found", "mapping", "headers", "extra_columns") if k in plan}
     return {"total": len(plan["people"]), "new": new, "existing": existing, "with_response": replied, "sample": sample, **extra}
