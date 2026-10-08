@@ -83,6 +83,22 @@ CREATE TABLE IF NOT EXISTS ignored_people (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- dated things to act on: an OA window closing, an interview time, a recruiter call
+CREATE TABLE IF NOT EXISTS milestones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,                       -- 'OA due' | 'Interview' | 'Call' | 'Other'
+    due_at TEXT NOT NULL,                     -- 'YYYY-MM-DD' (all day) or 'YYYY-MM-DDTHH:MM', in YOUR local time
+    source TEXT NOT NULL DEFAULT 'email',     -- email | manual
+    quote TEXT NOT NULL DEFAULT '',           -- the sentence in the email that states it (verified to exist)
+    tz_note TEXT NOT NULL DEFAULT '',         -- what the email said ("11:59 PM PT") when converted to your timezone
+    email_received_at TEXT NOT NULL DEFAULT '',
+    done INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_milestone_app ON milestones(application_id);
+
 -- evaluation set: real emails sampled from your mailbox, with the pipeline's prediction and YOUR label (local only)
 CREATE TABLE IF NOT EXISTS eval_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

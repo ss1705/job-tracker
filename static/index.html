@@ -199,6 +199,7 @@
   </nav>
 
   <div id="appsView">
+  <section class="card" id="comingUp" hidden style="margin-bottom:16px"></section>
   <section class="card">
     <div class="sync">
       <h2>Sync from Gmail</h2>
@@ -363,7 +364,7 @@
 
 <script>
 const STATUSES = ["Saved", "Applied", "OA", "Interview", "Offer", "Rejected", "Withdrawn"];
-let apps = [], stats = {}, filter = new URLSearchParams(location.hash.slice(1)).get("filter") || "all", openId = +new URLSearchParams(location.hash.slice(1)).get("open") || null;
+let apps = [], stats = {}, milestones = [], filter = new URLSearchParams(location.hash.slice(1)).get("filter") || "all", openId = +new URLSearchParams(location.hash.slice(1)).get("open") || null;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const DASH = '<span class="dash">—</span>';
@@ -389,11 +390,11 @@ async function api(path, opts = {}) {
 }
 
 async function load() {
-  [apps, stats] = await Promise.all([api("/api/applications"), api("/api/stats")]);
+  [apps, stats, milestones] = await Promise.all([api("/api/applications"), api("/api/stats"), api("/api/milestones").catch(() => [])]);
   $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") + (stats.follow_up ? ` · ${stats.follow_up} to follow up` : "") + (stats.contacts_due ? ` · ${stats.contacts_due} contact${stats.contacts_due > 1 ? "s" : ""} to follow up` : "") + (stats.contacts_to_sort ? ` · ${stats.contacts_to_sort} to sort` : "") : "Nothing tracked yet";
   $("#tabAppsCount").textContent = stats.follow_up || "";
   $("#tabContactsCount").textContent = (stats.contacts_due || 0) + (stats.contacts_to_sort || 0) || "";
-  renderChips(); renderRows();
+  renderChips(); renderRows(); renderComingUp();
 }
 
 function renderChips() {
@@ -431,7 +432,7 @@ function renderRows() {
   $("#empty").hidden = apps.length > 0;
   $("#rows").innerHTML = list.map(a => `
     <tr class="app ${a.id === openId ? "open" : ""}" data-id="${a.id}">
-      <td class="company">${esc(a.company)}${a.needs_review ? '<span class="badge warn">review</span>' : ""}${a.contact_type ? `<span class="badge contact" title="${esc(a.contact_name || a.contact_type)}">${esc(a.contact_type.toLowerCase())}</span>` : ""}${a.follow_up_due ? `<span class="badge due" title="${esc(a.follow_up_reason)}">follow up</span>` : ""}${deadlineBadge(a)}</td>
+      <td class="company">${esc(a.company)}${a.needs_review ? '<span class="badge warn">review</span>' : ""}${a.contact_type ? `<span class="badge contact" title="${esc(a.contact_name || a.contact_type)}">${esc(a.contact_type.toLowerCase())}</span>` : ""}${a.follow_up_due ? `<span class="badge due" title="${esc(a.follow_up_reason)}">follow up</span>` : ""}${deadlineBadge(a)}${a.next_milestone ? `<span class="badge ${a.next_milestone.days <= 1 ? "late" : "due"}">${esc(a.next_milestone.kind)} · ${esc(a.next_milestone.when)}</span>` : ""}</td>
       <td class="role">${esc(a.role) || DASH}</td>
       <td>${a.job_type ? `<span class="type-tag">${esc(a.job_type)}</span>` : DASH}</td>
       <td><select class="status" aria-label="Status" data-id="${a.id}" style="--c:var(--${a.status})">
@@ -448,7 +449,7 @@ async function loadDetail(id) {
   if (!a || !el) return;
   const ev = await api(`/api/applications/${id}/events`);
   el.innerHTML = `<div class="detail-grid">
-    <div><h4>Email timeline</h4>
+    <div>${milestoneBlock(a)}<h4 style="margin-top:18px">Email timeline</h4>
       <ul class="timeline">${ev.length ? ev.map(e => `<li style="--c:var(--${STATUSES.includes(e.type) ? e.type : "Saved"})">
         <b>${esc(e.type)}</b> <span class="muted">· ${fmt(e.received_at)}</span>
         <div class="subj">${esc(e.subject)}</div>
@@ -990,6 +991,54 @@ $("#evalWriteBtn").onclick = async () => {
   try { const r = await api("/api/eval/write-report", { method: "POST" }); $("#evalMetrics").insertAdjacentHTML("afterbegin", `<div style="color:var(--Offer);margin-bottom:6px">Wrote ${esc(r.report)} (numbers only) and ${esc(r.errors)} (private).</div>`); }
   catch (err) { $("#evalMetrics").textContent = err.message; }
 };
+
+// ---------------------------------------------------------------- milestones (deadlines + interviews)
+const MKINDS = ["OA due", "Interview", "Call", "Other"];
+const msLine = m => `<div class="row" style="padding:4px 0">
+    <span class="badge ${m.days <= 1 ? "late" : "due"}" style="margin-left:0">${esc(m.kind)}</span>
+    <span title="${m.tz_note ? "The email said " + esc(m.tz_note) + "; shown in your timezone" : ""}"><b>${esc(m.when)}</b>${m.note ? ` <span class="muted">· ${esc(m.note)}</span>` : ""}</span>
+    <span style="flex:1"></span>
+    <a href="/api/milestones/${m.id}.ics" title="Download a calendar event with reminders">Add to calendar</a>
+    <button class="link" data-ms="done" data-mid="${m.id}">Done</button><button class="link danger" data-ms="del" data-mid="${m.id}">Remove</button></div>`;
+
+function milestoneBlock(a) {
+  const mine = milestones.filter(m => m.application_id === a.id);
+  return `<h4>Coming up</h4>${mine.length ? mine.map(msLine).join("") : '<div class="muted" style="font-size:13px">Nothing scheduled.</div>'}
+    <div class="row" style="margin-top:8px" data-appid="${a.id}">
+      <select data-msk aria-label="Kind">${MKINDS.map(k => `<option ${k === "Interview" ? "selected" : ""}>${k}</option>`).join("")}</select>
+      <input type="date" data-msd aria-label="Date"><input type="time" data-mst aria-label="Time (optional)">
+      <button data-ms="add">Add</button></div>`;
+}
+
+function renderComingUp() {
+  const el = $("#comingUp"), next = milestones.filter(m => m.days <= 14).slice(0, 6);
+  if (!next.length) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `<div class="row"><strong>Coming up</strong><span class="muted" style="font-size:13px">${next.length} in the next two weeks</span><span style="flex:1"></span>
+      <button class="link" data-ms="rescan" title="Look for dates in recent OA / interview emails">Scan recent emails</button></div>
+    ${next.map(m => `<div class="row" style="padding:5px 0">
+      <span class="badge ${m.days <= 1 ? "late" : "due"}" style="margin-left:0;min-width:64px;text-align:center">${esc(m.kind)}</span>
+      <b>${esc(m.company)}</b><span class="muted">${esc(m.role)}</span><span style="flex:1"></span><span>${esc(m.when)}</span>
+      <a href="/api/milestones/${m.id}.ics">Calendar</a><button class="link" data-ms="done" data-mid="${m.id}">Done</button></div>`).join("")}`;
+}
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-ms]"); if (!b) return;
+  const act = b.dataset.ms;
+  if (act === "done") await api(`/api/milestones/${b.dataset.mid}`, { method: "PATCH", body: JSON.stringify({ done: true }) });
+  else if (act === "del") { if (!confirm("Remove this?")) return; await api(`/api/milestones/${b.dataset.mid}`, { method: "DELETE" }); }
+  else if (act === "add") {
+    const row = b.closest("[data-appid]"), d = row.querySelector("[data-msd]").value, t = row.querySelector("[data-mst]").value;
+    if (!d) { row.querySelector("[data-msd]").focus(); return; }
+    await api(`/api/applications/${row.dataset.appid}/milestones`, { method: "POST", body: JSON.stringify({ kind: row.querySelector("[data-msk]").value, due_at: t ? `${d}T${t}` : d }) });
+  } else if (act === "rescan") {
+    b.disabled = true; b.textContent = "Scanning…";
+    try { await api("/api/milestones/rescan", { method: "POST", body: JSON.stringify({ days: 21 }) }); } catch (err) { b.textContent = err.message; return; }
+    const tick = async () => { const s = await api("/api/milestones/rescan/status"); b.textContent = s.running ? `Scanning ${s.done}/${s.total}…` : `Scanned: ${s.found} found`; if (s.running) setTimeout(tick, 1500); else { await load(); } };
+    tick(); return;
+  }
+  await load();
+});
 
 // tabs
 function setTab(tab) {

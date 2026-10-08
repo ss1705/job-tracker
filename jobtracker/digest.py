@@ -36,8 +36,14 @@ def recent_responses(conn, hours: int = 30) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def build(apps: list[dict], people: list[dict], events: list[dict], responses: list[dict], today: date) -> dict | None:
+def build(apps: list[dict], people: list[dict], events: list[dict], responses: list[dict], today: date,
+          upcoming: list[dict] | None = None) -> dict | None:
     sections: list[tuple[str, list[str]]] = []
+
+    soon = sorted((m for m in (upcoming or []) if not m.get("done") and -1 <= m["days"] <= 3), key=lambda m: m["due_at"])
+    if soon:
+        sections.append(("Coming up", [f"{m['kind']}: {m['company']}" + (f" ({m['role']})" if m.get("role") else "") + f" — {m['when']}" for m in soon]))
+
 
     lines = [f"{RESPONSE_LABEL[e['type']]}: {e['company']}" + (f" ({e['role']})" if e["role"] else "") for e in events]
     lines += [f"{r['name']}" + (f" ({r['company']})" if r["company"] else "") + f" {r['response_kind'].lower()} on LinkedIn" for r in responses]
@@ -71,6 +77,7 @@ def build(apps: list[dict], people: list[dict], events: list[dict], responses: l
 
     n = sum(len(items) for _, items in sections)
     bits = []
+    if soon: bits.insert(0, f"{len(soon)} coming up")
     if lines: bits.append(f"{len(lines)} new response{'s' if len(lines) != 1 else ''}")
     follow = len(due_people) + len(due_apps)
     if follow: bits.append(f"{follow} to follow up")
@@ -88,13 +95,14 @@ def build(apps: list[dict], people: list[dict], events: list[dict], responses: l
 
 def collect(today: date | None = None) -> dict | None:
     """Gather current state from the database and build the digest (None = nothing to report)."""
-    from . import api, contacts, db      # imported lazily: api imports the scheduler, which imports this module
+    from . import api, contacts, db, milestones      # imported lazily: api imports the scheduler, which imports this module
     today = today or date.today()
     apps = api.list_applications()
     with db.session() as conn:
         people = contacts.list_with_flags(conn)
         events, responses = recent_events(conn), recent_responses(conn)
-    return build(apps, people, events, responses, today)
+        upcoming = milestones.upcoming(conn, today, 7)
+    return build(apps, people, events, responses, today, upcoming)
 
 
 def local_now() -> datetime:

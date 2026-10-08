@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from datetime import date
 
-from . import config, db, gmail, outreach
+from . import config, db, gmail, milestones, outreach
 from .parser import LLMExhausted, Parsed, is_receipt_subject, parse_email
 
 # lifecycle ranking used to decide the "current" status of an application
@@ -52,8 +52,8 @@ def recompute(conn, app_id: int):
     conn.execute(f"UPDATE applications SET {sets} WHERE id=?", (*fields.values(), app_id))
 
 
-def apply_parsed(conn, msg: dict, p: Parsed) -> str:
-    """Insert the event (creating/matching an application). Returns the outcome label."""
+def apply_parsed(conn, msg: dict, p: Parsed, out: dict | None = None) -> str:
+    """Insert the event (creating/matching an application). Returns the outcome label; `out["app_id"]` receives the application id."""
     is_applied = p.status == "Applied"
     app, confident = db.find_application(conn, p.company, p.role, p.req_id, is_applied)
     review = int(not confident or not p.status)
@@ -95,6 +95,8 @@ def apply_parsed(conn, msg: dict, p: Parsed) -> str:
          " ".join(msg["body"].split())[:400]),
     )
     recompute(conn, app_id)
+    if out is not None:
+        out["app_id"] = app_id
     return "needs_review" if review else "linked"
 
 
@@ -116,6 +118,19 @@ def split_events(conn, app_id: int, event_ids: list[int], role: str = "") -> int
     recompute(conn, new_id)
     recompute(conn, app_id)
     return new_id
+
+
+def capture_milestones(app_id: int, msg: dict) -> int:
+    """Deadlines / interview times from an OA or interview email. Optional extra: a failure here never stops a sync."""
+    try:
+        items = milestones.extract(msg["subject"], msg["body"], msg["received_at"])
+        if not items:
+            return 0
+        with db.session() as conn:
+            return milestones.store(conn, app_id, items, msg["received_at"])
+    except Exception as e:
+        print(f"[milestones] skipped: {type(e).__name__}: {e}")
+        return 0
 
 
 # ---------------------------------------------------------------- orchestration
@@ -199,18 +214,21 @@ def run_sync(since: date, until: date | None = None, reprocess_linkedin: bool = 
                 state.failed += 1
                 state.done += 1
                 continue
+            landed = {}
             with db.session() as conn:
                 if not p.is_job or not p.company:
                     outcome = "ignored"
                     state.ignored += 1
                 else:
                     before = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
-                    outcome = apply_parsed(conn, msg, p)
+                    outcome = apply_parsed(conn, msg, p, out=landed)
                     after = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
                     state.added += after - before
                     state.updated += int(after == before)
                     state.review += int(outcome == "needs_review")
                 conn.execute("INSERT OR REPLACE INTO seen_messages (gmail_id, outcome) VALUES (?,?)", (msg["id"], outcome))
+            if landed.get("app_id") and p.status in ("OA", "Interview"):
+                capture_milestones(landed["app_id"], msg)       # after the write is committed: the LLM call can be slow
             state.done += 1
         state.message = "Done"
     except gmail.AuthRequired as e:

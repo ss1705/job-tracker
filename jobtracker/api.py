@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, contacts, db, digest, drafts_api, eval_api, followups, gmail, importers, parser, scheduler, sync
+from . import config, contacts, db, digest, drafts_api, eval_api, followups, gmail, importers, milestones, milestones_api, parser, scheduler, sync
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -28,6 +28,7 @@ app = FastAPI(title="Job Tracker", lifespan=lifespan)
 app.include_router(contacts.router)
 app.include_router(drafts_api.router)
 app.include_router(eval_api.router)
+app.include_router(milestones_api.router)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
@@ -114,7 +115,13 @@ def list_applications():
         responded = {r[0] for r in conn.execute(
             "SELECT DISTINCT application_id FROM events WHERE type IN ('OA','Interview','Offer','Rejected')")}
     today = date.today()
+    with db.session() as conn:
+        nxt = {}
+        for m in milestones.upcoming(conn, today, 365):          # ordered by date: the first one per application is the next
+            nxt.setdefault(m["application_id"], m)
     for a in apps:
+        m = nxt.get(a["id"])
+        a["next_milestone"] = {"id": m["id"], "kind": m["kind"], "days": m["days"], "when": m["when"]} if m else None
         last_local = sync.local_date(a["last_event_at"]) if a["last_event_at"] else None
         latest = {**a, "applied_at": a["applied_dates"][-1] if a["applied_dates"] else a["applied_at"]}   # re-applying restarts the clock
         a.update(followups.flags(latest, a["id"] in responded, last_local, today))

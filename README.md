@@ -71,6 +71,21 @@ personal detail, and runs a second fact-check pass that flags anything the sourc
 never sends anything: you copy the text, send it on LinkedIn, and press **I sent it**, which logs the outreach (stage, date,
 channel, the text you sent) in Contacts. Set `OUTREACH_GOAL` in `.env` to change what you ask people for.
 
+## Deadlines and interviews
+
+OA and interview emails are scanned for dates ("complete by Oct 12, 11:59 PM ET", "you have 7 days", "interview on Tuesday at 2 PM PT").
+An LLM proposes them and code verifies each one (the quoted sentence must exist in the email, relative phrases are computed from
+the email's own date, times are converted to your timezone, implausible dates are dropped). They show in a **Coming up** strip, as a
+badge on the application, in the daily digest, and each has an **Add to calendar** download (with reminders a day and two hours
+before). A reschedule email moves the existing one. You can also add your own (a recruiter call, say) and mark items done.
+
+## Evaluation
+
+The **Evaluate** tab samples real emails from your mailbox (some the search finds, some it doesn't), shows the parser's prediction, and
+lets you confirm or correct it. **Compute metrics** then reports detection precision/recall, status/company/role accuracy with 95%
+confidence intervals, per-class results and a confusion matrix, rules-only vs rules + LLM, and an estimate of how many real application
+emails the Gmail search misses. **Write report files** saves `docs/EVAL.md` (numbers only, safe to commit) and a private error list.
+
 ## Daily digest
 
 A short email to yourself each morning (at `DIGEST_HOUR`, default 8) listing new responses, people and applications to
