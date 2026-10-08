@@ -126,6 +126,11 @@
   ul.hooks li { margin: 4px 0; } ul.hooks q { color: var(--muted); }
   label.btn { display: inline-block; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; padding: 7px 14px; cursor: pointer; }
   label.btn:hover { border-color: var(--muted); }
+  .email-body { white-space: pre-wrap; background: var(--surface-2); border-radius: 10px; padding: 12px 14px; max-height: 260px; overflow: auto; font-size: 13px; line-height: 1.55; }
+  table.metrics { min-width: 0; width: auto; } table.metrics th, table.metrics td { padding: 5px 14px 5px 0; border: 0; }
+  table.metrics td.n { font-variant-numeric: tabular-nums; }
+  .progressbar { height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+  .progressbar > i { display: block; height: 100%; background: var(--accent); }
   .dash { color: var(--muted); opacity: .6; }
   .type-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
 
@@ -190,6 +195,7 @@
     <button class="tab" role="tab" data-tab="apps" aria-selected="true">Applications <span class="count" id="tabAppsCount"></span></button>
     <button class="tab" role="tab" data-tab="contacts" aria-selected="false">Contacts <span class="count" id="tabContactsCount"></span></button>
     <button class="tab" role="tab" data-tab="outreach" aria-selected="false">Outreach</button>
+    <button class="tab" role="tab" data-tab="eval" aria-selected="false">Evaluate</button>
   </nav>
 
   <div id="appsView">
@@ -265,6 +271,24 @@
     </section>
 
     <section id="oResult" class="card" style="margin-top:16px" hidden></section>
+  </div>
+
+  <div id="evalView" hidden>
+    <section class="card">
+      <div class="row"><strong>Evaluation set</strong><span id="evalProgress" class="muted" style="font-size:13px"></span><span style="flex:1"></span>
+        <button id="evalSampleBtn" title="Pick random emails from your mailbox: some the search finds, some it doesn't">Sample my mailbox</button>
+        <button id="evalPredictBtn" title="Run the parser on sampled emails that have no prediction yet">Run pipeline</button></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Label real emails to measure how well the tracker works. Judge each email first; the prediction is only a starting point. Everything stays on this Mac (data/, never in git).</div>
+      <div id="evalJob" class="muted" style="font-size:13px;margin-top:6px"></div>
+    </section>
+
+    <section class="card" id="evalCard" style="margin-top:16px" hidden></section>
+
+    <section class="card" style="margin-top:16px">
+      <div class="row"><strong>Results</strong><span style="flex:1"></span>
+        <button id="evalMetricsBtn">Compute metrics</button><button id="evalWriteBtn" title="Writes docs/EVAL.md (numbers only) and data/eval_errors.md (private)">Write report files</button></div>
+      <div id="evalMetrics" style="margin-top:10px;font-size:13px"></div>
+    </section>
   </div>
 
   <section class="card" id="digestCard" style="margin-top:20px">
@@ -872,12 +896,108 @@ async function openOutreachFor(id) {
 }
 loadResume();
 
+// ---------------------------------------------------------------- evaluation
+const ESTATUS = ["Applied", "OA", "Interview", "Offer", "Rejected", "Other"];
+let evItem = null, evAfter = 0, evPoll = null;
+
+async function evalSummary() {
+  const s = await api("/api/eval/summary").catch(() => null); if (!s) return;
+  $("#evalProgress").textContent = s.total ? `${s.labeled} of ${s.total} labeled (${s.matched_labeled} matched · ${s.unmatched_labeled} unmatched)` : "No emails sampled yet.";
+  const j = s.job, el = $("#evalJob");
+  el.className = j.error ? "err" : "muted";
+  el.innerHTML = j.error ? esc(j.error) : j.running ? `${esc(j.phase)} ${j.done}/${j.total}` : "";
+  $("#evalSampleBtn").disabled = $("#evalPredictBtn").disabled = !!j.running;
+  if (j.running) { clearTimeout(evPoll); evPoll = setTimeout(() => { evalSummary(); if (!evItem) evalNext(); }, 2500); }
+  return s;
+}
+
+function evalRender(item, sum) {
+  const box = $("#evalCard");
+  box.hidden = false;
+  if (!item) { box.innerHTML = '<div class="muted">Nothing left to label right now. Sample more, or wait for predictions to finish.</div>'; return; }
+  const p = item.pred, isJob = p.is_job;
+  box.innerHTML = `
+    <div class="row"><span class="pill ${item.kind === "matched" ? "yes" : "maybe"}">${item.kind === "matched" ? "search found it" : "search did NOT find it"}</span>
+      <span class="muted">${esc(item.received_at)} · ${esc(item.sender)}</span></div>
+    <h3 style="margin:8px 0 8px;font-size:16px">${esc(item.subject) || "(no subject)"}</h3>
+    <div class="email-body">${esc(item.body) || "(empty body)"}</div>
+    <div class="row" style="margin-top:14px;align-items:flex-end">
+      <label class="field">Application email?<select id="evJob"><option value="1" ${isJob ? "selected" : ""}>Yes</option><option value="0" ${isJob ? "" : "selected"}>No</option></select></label>
+      <label class="field">Company<input id="evCompany" value="${esc(p.company || "")}" style="width:170px"></label>
+      <label class="field">Role<input id="evRole" value="${esc(p.role || "")}" style="width:220px"></label>
+      <label class="field">Status<select id="evStatus">${ESTATUS.map(x => `<option ${x === (p.status || "Other") ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="primary" data-ev="ok" title="Shortcut: Y">Save (matches the email)</button>
+      <button data-ev="skip" title="Shortcut: S">Skip</button><span class="muted" style="font-size:12px">Edit any field above, then Save. “Other” = job-related but no clear outcome.</span></div>`;
+  const toggle = () => { const j = $("#evJob").value === "1"; ["#evCompany", "#evRole", "#evStatus"].forEach(q => $(q).disabled = !j); };
+  $("#evJob").onchange = toggle; toggle();
+}
+
+async function evalNext(after = evAfter) {
+  const r = await api(`/api/eval/next?after_id=${after}`).catch(() => ({ item: null }));
+  evItem = r.item; evalRender(r.item);
+}
+
+$("#evalCard").addEventListener("click", async e => {
+  const b = e.target.closest("[data-ev]"); if (!b || !evItem) return;
+  if (b.dataset.ev === "skip") { evAfter = evItem.id; await evalNext(evAfter); return; }
+  const isJob = $("#evJob").value === "1";
+  await api(`/api/eval/${evItem.id}/label`, { method: "POST", body: JSON.stringify({
+    is_job: isJob, company: isJob ? $("#evCompany").value : "", role: isJob ? $("#evRole").value : "", status: isJob ? $("#evStatus").value : null }) });
+  evAfter = 0; await evalSummary(); await evalNext(0);
+});
+document.addEventListener("keydown", e => {
+  if ($("#evalView").hidden || e.target.closest("input, textarea, select") || !evItem) return;
+  if (e.key.toLowerCase() === "y") $('[data-ev="ok"]')?.click();
+  if (e.key.toLowerCase() === "s") $('[data-ev="skip"]')?.click();
+});
+
+$("#evalSampleBtn").onclick = async () => {
+  if (!confirm("Sample about 120 emails the search found and 60 it didn't, from the last ~4 months? This reads your mailbox and runs the parser on them.")) return;
+  try { await api("/api/eval/sample", { method: "POST", body: JSON.stringify({ n_matched: 120, n_unmatched: 60 }) }); } catch (err) { $("#evalJob").className = "err"; $("#evalJob").textContent = err.message; return; }
+  evalSummary();
+};
+$("#evalPredictBtn").onclick = async () => { await api("/api/eval/predict", { method: "POST" }); evalSummary(); };
+
+const pctCI = r => (!r || r.value == null) ? "n/a" : `${Math.round(r.value * 100)}% <span class="muted">(${r.k}/${r.n}; ${Math.round(r.ci[0] * 100)}–${Math.round(r.ci[1] * 100)}%)</span>`;
+const pc = x => x == null ? "n/a" : Math.round(x * 100) + "%";
+$("#evalMetricsBtn").onclick = async () => {
+  const out = $("#evalMetrics"); out.className = "muted"; out.textContent = "Computing…";
+  try {
+    const r = await api("/api/eval/report"), d = r.detection, e = r.extraction, ru = r.rules_only, sr = r.search, w = r.wild;
+    out.className = "";
+    out.innerHTML = `
+      <div class="muted">${r.n_matched_labeled} matched + ${r.n_unmatched_labeled} unmatched emails labeled · 95% intervals in grey${r.n_matched_labeled < 60 ? " · <b>label more for tighter intervals</b>" : ""}</div>
+      <h4 style="margin:14px 0 4px">Is it an application email?</h4>
+      <table class="metrics"><tr><th></th><th>Precision</th><th>Recall</th><th>F1</th></tr>
+        <tr><td>Rules + LLM</td><td class="n">${pc(d.precision)}</td><td class="n">${pc(d.recall)}</td><td class="n">${pc(d.f1)}</td></tr>
+        <tr><td>Rules only</td><td class="n">${pc(ru.detection.precision)}</td><td class="n">${pc(ru.detection.recall)}</td><td class="n">${pc(ru.detection.f1)}</td></tr></table>
+      <h4 style="margin:14px 0 4px">Extraction (over ${e.n_job_emails} real application emails; missed = wrong)</h4>
+      <table class="metrics"><tr><th></th><th>Rules + LLM</th><th>Rules only</th></tr>
+        <tr><td>Status</td><td class="n">${pctCI(e.status)}</td><td class="n">${pctCI(ru.extraction.status)}</td></tr>
+        <tr><td>Company</td><td class="n">${pctCI(e.company)}</td><td class="n">${pctCI(ru.extraction.company)}</td></tr>
+        <tr><td>Role</td><td class="n">${pctCI(e.role)}</td><td class="n">${pctCI(ru.extraction.role)}</td></tr></table>
+      <h4 style="margin:14px 0 4px">Status by class</h4>
+      <table class="metrics"><tr><th>Status</th><th>Precision</th><th>Recall</th><th>F1</th><th>Emails</th></tr>
+        ${Object.entries(r.status.per_class).filter(([, v]) => v.support || v.fp).map(([c, v]) => `<tr><td>${c}</td><td class="n">${pc(v.precision)}</td><td class="n">${pc(v.recall)}</td><td class="n">${pc(v.f1)}</td><td class="n">${v.support}</td></tr>`).join("")}</table>
+      <h4 style="margin:14px 0 4px">Does the Gmail search find them?</h4>
+      <div>Sample of ${sr.unmatched_sample.n} unmatched emails: ${pctCI(sr.unmatched_sample)} were real application emails. Estimated search recall: <b>${pc(sr.recall)}</b> (about ${sr.estimated_found} found, ${sr.estimated_missed} missed).</div>
+      <h4 style="margin:14px 0 4px">In real use</h4>
+      <div>${w.applications_from_email} applications from ${w.emails_processed} emails; you fixed the status by hand on ${w.status_fixed_by_hand}; ${w.in_review_queue} in the review queue.</div>`;
+  } catch (err) { out.className = "err"; out.textContent = err.message; }
+};
+$("#evalWriteBtn").onclick = async () => {
+  try { const r = await api("/api/eval/write-report", { method: "POST" }); $("#evalMetrics").insertAdjacentHTML("afterbegin", `<div style="color:var(--Offer);margin-bottom:6px">Wrote ${esc(r.report)} (numbers only) and ${esc(r.errors)} (private).</div>`); }
+  catch (err) { $("#evalMetrics").textContent = err.message; }
+};
+
 // tabs
 function setTab(tab) {
-  $("#appsView").hidden = tab !== "apps"; $("#contactsView").hidden = tab !== "contacts"; $("#outreachView").hidden = tab !== "outreach";
+  $("#appsView").hidden = tab !== "apps"; $("#contactsView").hidden = tab !== "contacts"; $("#outreachView").hidden = tab !== "outreach"; $("#evalView").hidden = tab !== "eval";
   $("#addBtn").hidden = tab !== "apps"; $("#addContactBtn").hidden = tab !== "contacts"; $("#importBtn").hidden = tab !== "contacts";
   document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
   store.set("tab", tab);
+  if (tab === "eval") { evalSummary(); if (!evItem) evalNext(0); }
 }
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
 setTab(new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps");

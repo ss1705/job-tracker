@@ -83,6 +83,20 @@ CREATE TABLE IF NOT EXISTS ignored_people (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- evaluation set: real emails sampled from your mailbox, with the pipeline's prediction and YOUR label (local only)
+CREATE TABLE IF NOT EXISTS eval_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    gmail_id TEXT UNIQUE NOT NULL,
+    kind TEXT NOT NULL,                       -- matched (the sync query finds it) | unmatched (it doesn't)
+    subject TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    pred_json TEXT NOT NULL DEFAULT '',       -- {is_job, company, role, status, via} from the full pipeline at sampling time
+    truth_json TEXT NOT NULL DEFAULT '',      -- {is_job, company, role, status} confirmed or corrected by you
+    labeled_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 -- every Gmail message we've looked at, so re-syncs are cheap and idempotent
