@@ -205,7 +205,7 @@ def same_company(a: str, b: str) -> bool:
         return True
     wa, wb = company_words(a), company_words(b)
     short, long_ = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
-    return bool(short) and long_[:len(short)] == short and len("".join(short)) >= 4
+    return bool(short) and long_[:len(short)] == short and len("".join(short)) >= 3
 
 
 def find_application(conn, company: str, role: str, req_id: str, is_applied_event: bool):

@@ -55,3 +55,14 @@ def test_search_recall_estimate_from_two_samples():
     assert s["estimated_found"] == 240 and s["estimated_missed"] == 40
     assert round(s["recall"], 3) == round(240 / 280, 3)
     assert (s["unmatched_sample"]["k"], s["unmatched_sample"]["n"]) == (2, 100)
+    lo, hi = s["recall_ci"]
+    assert lo < s["recall"] < hi and 0 < lo and hi <= 1                          # a real interval around the estimate
+
+
+def test_zero_misses_in_a_small_sample_does_not_claim_perfect_recall():
+    matched = [it(True, True)] * 10
+    unmatched = [it(False, False)] * 60                                           # 0 of 60 hiding
+    s = m.search_recall(matched, unmatched, n_matched_universe=130, n_unmatched_universe=2254)
+    assert s["recall"] == 1.0                                                     # the point estimate
+    assert s["recall_ci"][0] < 0.6                                                # but the data can't rule out many misses
+    assert s["missed_upper_bound"] > 100

@@ -92,7 +92,7 @@ def build_query(since: date, until: date | None = None) -> str:
     # Gmail evaluates after:/before: in Pacific time, so for US-east (or any other) users the first/last
     # hours of a day can fall outside the range. Pad by a day; already-seen emails are skipped anyway.
     since = since - timedelta(days=1)
-    q = f"({QUERY_TERMS}) after:{since:%Y/%m/%d} -category:promotions -category:social -in:spam -in:trash"
+    q = f"({QUERY_TERMS}) after:{since:%Y/%m/%d} -from:me -category:promotions -category:social -in:spam -in:trash"
     if until:
         q += f" before:{(until + timedelta(days=2)):%Y/%m/%d}"
     return q

@@ -1030,7 +1030,7 @@ $("#evalMetricsBtn").onclick = async () => {
       <table class="metrics"><tr><th>Status</th><th>Precision</th><th>Recall</th><th>F1</th><th>Emails</th></tr>
         ${Object.entries(r.status.per_class).filter(([, v]) => v.support || v.fp).map(([c, v]) => `<tr><td>${c}</td><td class="n">${pc(v.precision)}</td><td class="n">${pc(v.recall)}</td><td class="n">${pc(v.f1)}</td><td class="n">${v.support}</td></tr>`).join("")}</table>
       <h4 style="margin:14px 0 4px">Does the Gmail search find them?</h4>
-      <div>Sample of ${sr.unmatched_sample.n} unmatched emails: ${pctCI(sr.unmatched_sample)} were real application emails. Estimated search recall: <b>${pc(sr.recall)}</b> (about ${sr.estimated_found} found, ${sr.estimated_missed} missed).</div>
+      <div>Sample of ${sr.unmatched_sample.n} unmatched emails: ${pctCI(sr.unmatched_sample)} were real application emails. Estimated search recall: <b>${pc(sr.recall)}</b> (about ${sr.estimated_found} found, ${sr.estimated_missed} missed). <span class="muted">Honest range ${sr.recall_ci ? pc(sr.recall_ci[0]) + "–" + pc(sr.recall_ci[1]) : "n/a"}: up to ~${sr.missed_upper_bound} could be hiding; label more unmatched emails to narrow it.</span></div>
       <h4 style="margin:14px 0 4px">In real use</h4>
       <div>${w.applications_from_email} applications from ${w.emails_processed} emails; you fixed the status by hand on ${w.status_fixed_by_hand}; ${w.in_review_queue} in the review queue.</div>`;
   } catch (err) { out.className = "err"; out.textContent = err.message; }

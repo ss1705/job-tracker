@@ -405,3 +405,9 @@ def test_sheet_import_marks_existing_linkedin_people_as_sorted(env):
         row = c.execute("SELECT needs_triage, company, stage FROM contacts").fetchone()
         assert (row["needs_triage"], row["company"], row["stage"]) == (0, "Apple Music", "Replied")
         assert c.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] == 1
+
+
+def test_search_query_excludes_your_own_mail():
+    from datetime import date
+    from jobtracker import gmail
+    assert "-from:me" in gmail.build_query(date(2026, 10, 1))

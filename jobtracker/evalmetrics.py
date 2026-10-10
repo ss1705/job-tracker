@@ -95,8 +95,15 @@ def search_recall(matched_items: list[dict], unmatched_items: list[dict], n_matc
     pu = sum(1 for i in unmatched_items if i["truth"]["is_job"]) / len(unmatched_items) if unmatched_items else 0
     found, hidden = pm * n_matched_universe, pu * n_unmatched_universe
     missed_sample = sum(1 for i in unmatched_items if i["truth"]["is_job"])
-    return {"estimated_found": round(found), "estimated_missed": round(hidden),
+    # honest interval: pair the pessimistic rate on each side (few found, many hiding) and the optimistic one
+    pm_lo, pm_hi = wilson(sum(1 for i in matched_items if i["truth"]["is_job"]), len(matched_items))
+    pu_lo, pu_hi = wilson(missed_sample, len(unmatched_items))
+    ratio = lambda f, h: (f / (f + h)) if (f + h) else None
+    lo = ratio(pm_lo * n_matched_universe, pu_hi * n_unmatched_universe)
+    hi = ratio(pm_hi * n_matched_universe, pu_lo * n_unmatched_universe)
+    return {"estimated_found": round(found), "estimated_missed": round(hidden), "missed_upper_bound": round(pu_hi * n_unmatched_universe),
             "recall": (found / (found + hidden)) if (found + hidden) else None,
+            "recall_ci": [round(lo, 3), round(hi, 3)] if lo is not None and hi is not None else None,
             "unmatched_sample": _rate(missed_sample, len(unmatched_items)), "matched_universe": n_matched_universe,
             "unmatched_universe": n_unmatched_universe}
 

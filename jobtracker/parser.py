@@ -113,7 +113,7 @@ _STRONG_REJECT = re.compile(
     r"(move|moving) forward with (candidates|applicants)|(closer|better) (fit|match))",
     re.I,
 )
-_WEAK_REJECT = re.compile(r"(unfortunately|other candidates|other applicants|careful consideration)", re.I)
+_WEAK_REJECT = re.compile(r"(unfortunately|other candidates|other applicants|after (careful|further|thorough) (consideration|review))", re.I)
 _OFFER = re.compile(r"(pleased to (offer|extend)|offer letter|offer of employment|extend (you )?an offer|formal offer)", re.I)
 _OA = re.compile(
     r"(online assessment|coding (challenge|assessment|test)|hackerrank|codesignal|codility|"
@@ -132,6 +132,7 @@ _APPLIED = re.compile(
 _OUTCOME_HINT = re.compile(
     r"(decision|candidacy|careful (review|consideration)|move forward|moving forward|not (to )?(proceed|advance|continue)|"
     r"other candidates|regret|unfortunately|no longer|not selected)", re.I)
+_APPLIED_SUBJECT = re.compile(r"^\s*(re:\s*)?your application (for|to|with)\b", re.I)
 # a "still under consideration" holding email is not a rejection
 _HOLD = re.compile(r"(still under consideration|await to share next steps|remain under review)", re.I)
 
@@ -179,30 +180,45 @@ def action_summary(subject: str, body: str) -> str:
 
 def is_receipt_subject(subject: str) -> bool:
     """True for genuine application-receipt subjects ("Thank you for applying…"), not reminders/updates."""
-    return bool(_APPLIED.search(subject)) and not re.search(r"reminder|verify|incomplete|update", subject, re.I)
+    return (bool(_APPLIED.search(subject)) or bool(_APPLIED_SUBJECT.search(subject))) and not re.search(r"reminder|verify|incomplete|update", subject, re.I)
+
+
+_HEDGE = re.compile(r"\b(if|should|in case|once|whenever|unless|provided that|may|might|who (move|moves|are moved|advance)|"
+                    r"(is|are) selected|selected for|not selected)\b", re.I)
+_CLAUSE_SPLIT = re.compile(r"[.!?;\n]+|,\s+(?=(?:but |however |and )?(?:if|should|once|whenever)\b)|\s+but\s+|\s+however\s*,?\s+", re.I)
+
+
+def _unhedged(pattern: re.Pattern, subject: str, body: str) -> bool:
+    """The phrase counts if it is in the subject, or in a body clause that isn't conditional or hypothetical.
+    Receipts are full of "if you are selected we may schedule an interview"; that is not an interview."""
+    if pattern.search(subject):
+        return True
+    return any(pattern.search(c) and not _HEDGE.search(c) for c in _CLAUSE_SPLIT.split(body[:2500]))
 
 
 def rule_status(subject: str, body: str, sender: str = "") -> str | None:
     head = f"{subject}\n{body[:2500]}"
-    if _OFFER.search(head):
+    if _unhedged(_OFFER, subject, body):
         return "Offer"
-    if _STRONG_REJECT.search(head):
+    if _unhedged(_STRONG_REJECT, subject, body):
         return "Rejected"
     if _HOLD.search(head):
         return None
     if "hirevue.com" in sender.lower():
         return "OA"
-    if _OA.search(head):
+    if _unhedged(_OA, subject, body):
         return "OA"
-    if _INTERVIEW.search(head):
+    if _unhedged(_INTERVIEW, subject, body):
         return "Interview"
     if action_needed(subject, body, sender):
         return "Action"
+    if _APPLIED_SUBJECT.search(subject) and not re.search(r"update|status|decision|unfortunately", subject, re.I):
+        return "Applied"             # the Greenhouse-style receipt: "Your application for <role> at <company>"
     if _APPLIED.search(subject) or _APPLIED.search(body[:800]):
         return "Applied"
     if _HOLD.search(head):
         return None
-    if _WEAK_REJECT.search(head):
+    if _unhedged(_WEAK_REJECT, subject, body):
         return "Rejected"
     return None
 
@@ -254,7 +270,7 @@ def rule_company(subject: str, sender: str) -> str:
         parts = dom.split(".")
         sld = parts[-2] if len(parts) >= 2 else ""
         if sld and sld not in ("edu", "co") and len(sld) > 2:
-            return sld.title()
+            return sld.upper() if len(sld) <= 3 else sld.title()      # imc.com -> "IMC", but stripe.com -> "Stripe"
     return ""
 
 
@@ -337,7 +353,7 @@ Rules:
   OA        - online assessment, coding challenge, HackerRank/CodeSignal/HireVue invite
   Interview - invitation to schedule, or confirmation of, any interview or recruiter call
   Action    - the company needs something from the candidate: an additional-information form, documents, profile completion,
-              email verification, a work-authorization or self-identification form (NOT a plain receipt that merely says it may ask later)
+              candidate-account or email verification for an application, a work-authorization or self-identification form (NOT a plain receipt that merely says it may ask later)
   Rejected  - not moving forward, position filled, other candidates selected, etc.
   Offer     - job offer
   None      - cannot be determined (e.g. generic "we have an update" with no outcome)
@@ -406,7 +422,7 @@ def parse_email(subject: str, sender: str, body: str, use_llm: bool = True, extr
         out = llm_parse(subject, sender, body)
         if out:
             p.via = "rules+llm"
-            if not out.get("is_job_related"):
+            if not out.get("is_job_related") and status != "Action":      # (an Action found by a rule already passed the job-context check)
                 p.is_job = False
                 return p
             p.is_job = True

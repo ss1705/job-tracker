@@ -243,11 +243,14 @@ def markdown(rep: dict) -> str:
           "| truth \\ pred | " + " | ".join(s["columns"]) + " |", "|---|" + "---|" * len(s["columns"])]
     for t, row in s["confusion"].items():
         L.append(f"| {t} | " + " | ".join(str(row.get(c, 0)) for c in s["columns"]) + " |")
+    ci = srch.get("recall_ci")
     L += ["", "## Does the Gmail search find them? (search recall)", "",
           f"Of {srch['unmatched_universe']} emails the search did *not* match in the same period, a random sample of "
           f"{srch['unmatched_sample']['n']} contained {srch['unmatched_sample']['k']} real application emails "
-          f"({_pct(srch['unmatched_sample'])}). Scaled up: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed**, "
-          f"an estimated search recall of **{_f(srch['recall'])}**.", "",
+          f"({_pct(srch['unmatched_sample'])}). Point estimate: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed** "
+          f"(search recall **{_f(srch['recall'])}**). Because the sample is small, the honest range is "
+          f"**{_f(ci[0]) if ci else 'n/a'} to {_f(ci[1]) if ci else 'n/a'}**, i.e. up to about {srch['missed_upper_bound']} application emails could be "
+          "hiding in the unmatched mail; a larger or targeted sample is needed to narrow this.", "",
           "## In real use", "",
           f"- {w['applications_from_email']} applications were created automatically from {w['emails_processed']} emails processed "
           f"({w['emails_ignored']} ignored as not application mail).",

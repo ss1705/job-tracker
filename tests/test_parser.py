@@ -162,3 +162,52 @@ def test_action_needs_job_context_and_eligibility_rejections_are_rejections():
     body = ("Thank you for applying. During the application process you indicated you are not authorized to work in the U.S. "
             "At this time we are only able to consider candidates who do not require sponsorship. If this selection was made in error, please reply.")
     assert P("Application Follow Up", "no-reply@getgarner.com", body).status == "Rejected"
+
+
+def test_conditional_language_in_receipts_is_not_an_outcome():
+    # real shapes from receipts that were misread as OA / Interview / Rejected. Without the LLM the rules may decline to
+    # label a receipt that has decision-sounding words (they leave it to the model), but they must never call it an outcome.
+    wrong = {"OA", "Interview", "Rejected", "Offer"}
+    receipts = [
+        ("Acme <no-reply@us.greenhouse-mail.io>", "Thanks for applying. The first step for candidates who move forward is a HackerRank assessment. "
+         "You will receive an email from HackerRank with a deadline if your application is selected for the next stage."),
+        ("Beta <no-reply@ashbyhq.com>", "Thanks for applying. If your skills are a strong match, a member of our team will reach out to schedule an interview."),
+        ("Gamma <no-reply@us.greenhouse-mail.io>", "Thanks for applying. Due to high volume we may not be able to get back if you are not selected."),
+        ("Visa <visa@myworkday.com>", "Thank you for applying. Your application will be taken into careful consideration by our team."),
+    ]
+    for sender, body in receipts:
+        got = P("Thank you for applying", sender, body).status
+        assert got not in wrong, (sender, got)
+    assert P("Thank you for applying to Beta", "Beta <no-reply@ashbyhq.com>", receipts[1][1]).status == "Applied"
+
+
+def test_real_outcomes_still_count_when_a_conditional_follows_in_another_clause():
+    assert P("Update", "Acme <no-reply@acme.com>", "We have decided to move forward with other candidates, but if a role opens we will contact you.").status == "Rejected"
+    assert P("Update", "Acme <no-reply@acme.com>", "We will not be moving forward with your application. If you have questions, reply here.").status == "Rejected"
+    assert P("Your assessment", "Acme <no-reply@acme.com>", "Please complete the online assessment within 7 days; if you have trouble, contact us.").status == "OA"
+    assert P("Interview invitation", "Acme <no-reply@acme.com>", "We would like to schedule an interview with you next week.").status == "Interview"
+    assert P("After careful consideration", "Acme <no-reply@acme.com>", "After careful consideration, we have decided to pursue other applicants.").status == "Rejected"
+    assert P("Your offer", "Acme <no-reply@acme.com>", "We are pleased to offer you the position.").status == "Offer"
+
+
+def test_short_company_names_match_and_domain_acronyms_are_uppercased():
+    from jobtracker.db import same_company
+    assert same_company("IMC", "IMC Trading") and same_company("Imc", "IMC Trading")
+    assert not same_company("Ea", "Eagle Labs")
+    assert P("We've got it!", "campusus@imc.com", "Thanks for applying, we received your application.").company == "IMC"
+
+
+def test_greenhouse_style_receipt_subject_and_action_survives_llm_veto(monkeypatch):
+    from jobtracker import parser
+    p = P("Your application for Software Engineer, New Grad at Pinterest", "Pinterest <no-reply@us.greenhouse-mail.io>",
+          "Hi Alex, we reviewed things on our side. A recruiter may follow up.")
+    assert p.status == "Applied" and parser.is_receipt_subject("Your application for Software Engineer, New Grad at Pinterest")
+    assert P("Your application update", "Acme <no-reply@acme.com>", "Unfortunately we will not be moving forward.").status == "Rejected"
+
+    # the model calls a candidate-account verification "not job related"; the context-checked rule keeps it
+    monkeypatch.setattr(parser, "llm_available", lambda: True)
+    monkeypatch.setattr(parser, "llm_parse", lambda *a: {"is_job_related": False, "company": "", "role": "", "status": "None"})
+    kept = parse_email("Verify your candidate account", "Barclays <barclays@barclays.com>", "Please verify your email to continue your application.")
+    assert kept.is_job and kept.status == "Action"
+    gone = parse_email("Thanks for applying", "Foo <hi@foo.com>", "Thank you for applying to our team.")        # an ordinary rule result can still be vetoed
+    assert not gone.is_job
