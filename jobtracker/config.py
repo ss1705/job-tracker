@@ -41,3 +41,7 @@ OUTREACH_GOAL = os.getenv("OUTREACH_GOAL", "I'm looking for new grad / co-op sof
                           "I am not asking for a referral up front.")
 DATA_DIR = DB_PATH.parent
 LINKEDIN_NOTE_MAX = int(os.getenv("LINKEDIN_NOTE_MAX", "200"))      # connection-note limit: 200 on free accounts, 300 on Premium
+
+# developer tool: the Evaluate tab samples emails from your mailbox and stores up to 4,000 characters of each in data/ so you can
+# hand-label them and measure accuracy. Off by default; nothing about it is reachable unless you turn it on.
+ENABLE_EVAL = os.getenv("ENABLE_EVAL", "0") in ("1", "true", "True", "yes")

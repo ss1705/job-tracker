@@ -370,6 +370,11 @@ def digest_send_test():
     return r
 
 
+@app.get("/api/features")
+def features():
+    return {"eval": config.ENABLE_EVAL}
+
+
 @app.get("/api/export.csv")
 def export_csv():
     with db.session() as conn:

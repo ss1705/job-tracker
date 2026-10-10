@@ -235,3 +235,13 @@ def test_search_query_covers_recruiting_senders_in_every_tab():
     assert "from:(" in q and "recruiting" in q and "myworkday.com" in q and "candidate.fyi" in q
     assert '"job application"' in q and '"candidate"' in q
     assert q.count("-category:promotions") == 1 and "OR from:(" in q            # the tab exclusion applies to keywords only
+
+
+def test_receipt_subject_beats_an_informational_portal_mention():
+    receipt = P("We've got it! Your application for Graduate Software Engineer", "IMC <campus@imc.com>",
+                "Thanks for applying. You can check your application status any time in your candidate portal.")
+    assert receipt.status == "Applied"
+    # but a genuine request inside a receipt still counts, and a standalone portal / verification email is an action
+    assert P("Thank you for applying", "Acme <no-reply@us.greenhouse-mail.io>", "Thanks for applying. Please complete the self-identification form.").status == "Action"
+    assert P("Your Candidate Portal Magic Link", '"candidate.fyi" <noreply@candidate.fyi>', "Use the link to access your candidate portal for Acme.").status == "Action"
+    assert P("Verify your candidate account", "massmutual@otp.workday.com", "Click this link to confirm your email address.").status == "Action"

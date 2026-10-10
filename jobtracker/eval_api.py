@@ -3,12 +3,18 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from . import config, db, evalset, gmail
 
-router = APIRouter(prefix="/api/eval", tags=["eval"])
+def _enabled():
+    """The evaluation tools store email text, so they don't exist unless ENABLE_EVAL=1."""
+    if not config.ENABLE_EVAL:
+        raise HTTPException(404, "Evaluation tools are off. Set ENABLE_EVAL=1 in .env to turn them on.")
+
+
+router = APIRouter(prefix="/api/eval", tags=["eval"], dependencies=[Depends(_enabled)])
 
 
 class SampleRequest(BaseModel):
@@ -22,6 +28,20 @@ class LabelRequest(BaseModel):
     company: str = ""
     role: str = ""
     status: str | None = None
+
+
+@router.delete("/data")
+def delete_data():
+    """Erase everything the evaluation tools stored: sampled emails, predictions, your labels, the counts and the error file."""
+    with db.session() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM eval_items").fetchone()[0]
+        conn.execute("DELETE FROM eval_items")
+        conn.execute("DELETE FROM meta WHERE key='eval_universe'")
+    err = config.DATA_DIR / "eval_errors.md"
+    had_errors = err.exists()
+    if had_errors:
+        err.unlink()
+    return {"deleted_emails": n, "deleted_error_file": had_errors}
 
 
 @router.get("/summary")

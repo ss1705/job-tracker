@@ -12,6 +12,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTO_SYNC_MINUTES", "0")
     monkeypatch.setenv("DIGEST_ENABLED", "0")
     monkeypatch.setenv("GROQ_API_KEY", "")                      # rules only: deterministic, no network
+    monkeypatch.setenv("ENABLE_EVAL", "1")
     from jobtracker import config, db, followups, sync, scheduler, contacts, drafts_api, evalmetrics, evalset, eval_api, api
     for m in (config, db, followups, sync, scheduler, contacts, drafts_api, evalmetrics, evalset, eval_api, api):
         importlib.reload(m)
@@ -141,3 +142,43 @@ def test_hot_predicate_and_stratified_report(client):
     with db.session() as conn:
         md = es.markdown(es.report(conn))
     assert "I read the subject and sender of **all 400**" in md and "every suspect was checked" in md and "Shop" not in md
+
+
+def test_evaluation_tools_do_not_exist_unless_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "off.db"))
+    monkeypatch.setenv("AUTO_SYNC_MINUTES", "0")
+    monkeypatch.setenv("DIGEST_ENABLED", "0")
+    monkeypatch.setenv("ENABLE_EVAL", "0")
+    from jobtracker import config, db, followups, sync, scheduler, contacts, drafts_api, evalmetrics, evalset, eval_api, api
+    for m in (config, db, followups, sync, scheduler, contacts, drafts_api, evalmetrics, evalset, eval_api, api):
+        importlib.reload(m)
+    with TestClient(api.app) as c:
+        assert c.get("/api/features").json() == {"eval": False}
+        for method, path in (("get", "/api/eval/summary"), ("get", "/api/eval/next"), ("get", "/api/eval/report"), ("post", "/api/eval/sample"),
+                             ("post", "/api/eval/scan"), ("post", "/api/eval/predict"), ("delete", "/api/eval/data"), ("get", "/api/eval/labeled")):
+            r = getattr(c, method)(path)
+            assert r.status_code == 404 and "ENABLE_EVAL" in r.json()["detail"], path           # nothing is stored or reachable
+        assert c.get("/api/applications").status_code == 200                                      # the rest of the app is unaffected
+
+
+def test_delete_evaluation_data_removes_everything(client):
+    c, db, evalset = client
+    assert c.get("/api/features").json() == {"eval": True}
+    seed(db, evalset)
+    with db.session() as conn:
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('eval_universe', ?)", (json.dumps({"matched": 40, "unmatched": 200}),))
+        conn.execute("INSERT INTO meta (key, value) VALUES ('keep_me', '1')")
+    from jobtracker import config
+    err = config.DATA_DIR / "eval_errors.md"
+    err.write_text("private email text")
+    c.post("/api/eval/1/label", json=dict(is_job=False))
+
+    r = c.delete("/api/eval/data").json()
+    assert r == {"deleted_emails": 7, "deleted_error_file": True}
+    assert not err.exists()
+    s = c.get("/api/eval/summary").json()
+    assert (s["total"], s["labeled"], s["universe"]) == (0, 0, None)
+    with db.session() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM eval_items").fetchone()[0] == 0
+        assert conn.execute("SELECT value FROM meta WHERE key='keep_me'").fetchone()[0] == "1"     # unrelated data untouched
+    assert c.delete("/api/eval/data").json() == {"deleted_emails": 0, "deleted_error_file": False}  # safe to repeat

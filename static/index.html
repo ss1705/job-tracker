@@ -195,7 +195,7 @@
     <button class="tab" role="tab" data-tab="apps" aria-selected="true">Applications <span class="count" id="tabAppsCount"></span></button>
     <button class="tab" role="tab" data-tab="contacts" aria-selected="false">Contacts <span class="count" id="tabContactsCount"></span></button>
     <button class="tab" role="tab" data-tab="outreach" aria-selected="false">Outreach</button>
-    <button class="tab" role="tab" data-tab="eval" aria-selected="false">Evaluate</button>
+    <button class="tab" role="tab" data-tab="eval" id="evalTabBtn" aria-selected="false" hidden>Evaluate</button>
   </nav>
 
   <div id="appsView">
@@ -280,9 +280,10 @@
         <button id="evalSampleBtn" title="Pick random emails from your mailbox: some the search finds, some it doesn't">Sample my mailbox</button>
         <button id="evalPredictBtn" title="Run the parser on sampled emails that have no prediction yet">Run pipeline</button>
         <button id="evalRedoBtn" title="Re-run the improved parser on every sampled email (your labels are kept)">Re-run on all</button>
+        <button id="evalDeleteBtn" class="danger" title="Erase every sampled email, prediction and label stored by the evaluation tools">Delete evaluation data</button>
         <button id="evalMoreBtn" title="Add 200 more random emails the search did not match; most are obvious promos, so labeling them is just pressing Y">+200 random unmatched</button>
         <button id="evalScanBtn" title="Read the subject and sender of every email the search did NOT match, and queue the plausible ones to label">Scan for missed emails</button></div>
-      <div class="muted" style="font-size:12px;margin-top:6px">Label real emails to measure how well the tracker works. Judge each email first; the prediction is only a starting point. Everything stays on this Mac (data/, never in git).</div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Label real emails to measure how well the tracker works. Judge each email first; the prediction is only a starting point. Everything stays on this Mac (data/, never in git), but <b>it stores up to 4,000 characters of every sampled email</b> until you delete it.</div>
       <div id="evalJob" class="muted" style="font-size:13px;margin-top:6px"></div>
     </section>
 
@@ -925,7 +926,7 @@ async function evalSummary() {
   const j = s.job, el = $("#evalJob");
   el.className = j.error ? "err" : "muted";
   el.innerHTML = j.error ? esc(j.error) : j.running ? `${esc(j.phase)} ${j.done}/${j.total}` : "";
-  $("#evalSampleBtn").disabled = $("#evalPredictBtn").disabled = $("#evalRedoBtn").disabled = $("#evalScanBtn").disabled = $("#evalMoreBtn").disabled = !!j.running;
+  $("#evalSampleBtn").disabled = $("#evalPredictBtn").disabled = $("#evalRedoBtn").disabled = $("#evalScanBtn").disabled = $("#evalMoreBtn").disabled = $("#evalDeleteBtn").disabled = !!j.running;
   if (j.running) { clearTimeout(evPoll); evPoll = setTimeout(() => { evalSummary(); if (!evItem) evalNext(); }, 2500); }
   return s;
 }
@@ -978,6 +979,13 @@ $("#evalSampleBtn").onclick = async () => {
   evalSummary();
 };
 $("#evalPredictBtn").onclick = async () => { await api("/api/eval/predict", { method: "POST" }); evalSummary(); };
+$("#evalDeleteBtn").onclick = async () => {
+  if (!confirm("Delete ALL evaluation data? This erases the sampled email text, the predictions and every label you made (and the private error file). The metrics can't be recomputed afterwards unless you sample and label again. Reports already written to docs/ are not touched.")) return;
+  const r = await api("/api/eval/data", { method: "DELETE" });
+  evItem = null; evAfter = 0; $("#evalCard").hidden = true; $("#evLabeled").innerHTML = ""; $("#evalMetrics").innerHTML = "";
+  $("#evalJob").className = "muted"; $("#evalJob").textContent = `Deleted ${r.deleted_emails} sampled emails${r.deleted_error_file ? " and the error file" : ""}.`;
+  evalSummary();
+};
 $("#evalMoreBtn").onclick = async () => {
   try { await api("/api/eval/sample", { method: "POST", body: JSON.stringify({ n_matched: 0, n_unmatched: 200 }) }); } catch (err) { $("#evalJob").className = "err"; $("#evalJob").textContent = err.message; return; }
   evalSummary();
@@ -1112,7 +1120,9 @@ document.addEventListener("click", async e => {
 });
 
 // tabs
+let evalEnabled = false;      // the Evaluate tab only exists when ENABLE_EVAL=1 on the server
 function setTab(tab) {
+  if (tab === "eval" && !evalEnabled) tab = "apps";
   $("#appsView").hidden = tab !== "apps"; $("#contactsView").hidden = tab !== "contacts"; $("#outreachView").hidden = tab !== "outreach"; $("#evalView").hidden = tab !== "eval";
   $("#addBtn").hidden = tab !== "apps"; $("#addContactBtn").hidden = tab !== "contacts"; $("#importBtn").hidden = tab !== "contacts";
   document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
@@ -1120,7 +1130,9 @@ function setTab(tab) {
   if (tab === "eval") { evalSummary(); if (!evItem) evalNext(0); }
 }
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
-setTab(new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps");
+const wantedTab = new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps";
+setTab(wantedTab);
+api("/api/features").then(f => { evalEnabled = !!f.eval; $("#evalTabBtn").hidden = !evalEnabled; if (evalEnabled && wantedTab === "eval") setTab("eval"); }).catch(() => {});
 if (new URLSearchParams(location.hash.slice(1)).get("import")) $("#importBtn").click();
 if (new URLSearchParams(location.hash.slice(1)).get("odraft")) openOutreachFor(+new URLSearchParams(location.hash.slice(1)).get("odraft"));
 

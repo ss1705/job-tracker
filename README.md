@@ -88,12 +88,28 @@ and a stated deadline becomes an *Action due* milestone. It only counts when the
 recruiting system, so "verify your email" from a bank or a cloud console is ignored, and "if we need more information we'll contact you"
 in an ordinary receipt doesn't trigger it. You can also flag any application yourself (**Needs my action**).
 
-## Evaluation
+## Evaluation (developer tool, off by default)
 
-The **Evaluate** tab samples real emails from your mailbox (some the search finds, some it doesn't), shows the parser's prediction, and
+Parsing accuracy depends on *your* mail, so the repo ships the tool I used to measure it. Set `ENABLE_EVAL=1` in `.env` and an
+**Evaluate** tab appears. Without it the evaluation endpoints don't exist (they return 404) and nothing is stored.
+
+What it does: it samples real emails from your mailbox (some the search finds, some it doesn't), shows the parser's prediction, and
 lets you confirm or correct it. **Compute metrics** then reports detection precision/recall, status/company/role accuracy with 95%
 confidence intervals, per-class results and a confusion matrix, rules-only vs rules + LLM, and an estimate of how many real application
-emails the Gmail search misses. **Scan for missed emails** reads the subject and sender of every email the search did not match and queues the plausible ones, so the search-recall figure rests on an exhaustive check of the suspects plus a random sample of the rest. **Write report files** saves `docs/EVAL.md` (numbers only, safe to commit) and a private error list.
+emails the Gmail search misses. **Scan for missed emails** reads the subject and sender of every email the search did not match and
+queues the plausible ones, so the search-recall figure rests on an exhaustive check of the suspects plus a random sample of the rest.
+**Re-run on all** re-scores the sample after you change the parser (your labels are kept). **Write report files** saves
+`docs/EVAL.md` (aggregate numbers only, safe to share) and `data/eval_errors.md` (private).
+
+**Privacy:** sampling stores up to 4,000 characters of each sampled email in your local database (`data/`, gitignored) until you
+click **Delete evaluation data**, which erases the emails, predictions, labels and the error file. Reports already written to `docs/`
+contain only numbers.
+
+### How accurate is it?
+
+See [`docs/EVAL.md`](docs/EVAL.md) for the full report. Those are **the author's results on the author's mailbox**; yours will differ,
+which is the reason the tool is included. The parser was tuned on part of that sample, so the figures are optimistic until re-measured
+on a fresh held-out sample.
 
 ## Daily digest
 

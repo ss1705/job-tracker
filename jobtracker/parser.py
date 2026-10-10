@@ -132,7 +132,7 @@ _APPLIED = re.compile(
 _OUTCOME_HINT = re.compile(
     r"(decision|candidacy|careful (review|consideration)|move forward|moving forward|not (to )?(proceed|advance|continue)|"
     r"other candidates|regret|unfortunately|no longer|not selected)", re.I)
-_APPLIED_SUBJECT = re.compile(r"^\s*(re:\s*)?your application (for|to|with)\b", re.I)
+_APPLIED_SUBJECT = re.compile(r"\byour application (for|to|with)\b|\bwe('ve| have) got (it|your (application|resume))\b", re.I)
 # a "still under consideration" holding email is not a rejection
 _HOLD = re.compile(r"(still under consideration|await to share next steps|remain under review)", re.I)
 
@@ -145,7 +145,9 @@ _ACTION = re.compile(
     r"(please\s+)?(verify|confirm)\s+your\s+e-?mail|"
     r"(please\s+)?(upload|provide|submit|send)\s+(your|the|a)\s+(\w+\s+){0,2}(transcripts?|references?|resume|cv|documents?|work authorization|passport|portfolio)|"
     r"self[- ]identification|voluntary self|background check (form|authorization)|we (still )?need (you to|some|additional|more)|"
-    r"(confirm|verify) your (identity|candidate)|candidate (portal|account)|magic link)", re.I)
+    r"(confirm|verify) your candidate)", re.I)
+# informational mentions in receipts ("check your status in the candidate portal"), so these only count when the subject isn't a receipt
+_ACTION_PORTAL = re.compile(r"(confirm|verify) your identity|candidate (portal|account)|magic link", re.I)
 _ACTION_HEDGE = re.compile(
     r"(\bif\b|\bshould\b|\bin case\b|\bwhenever\b)[^.]{0,80}\b(need|require|request|necessary|additional)|\bmay (contact|reach|request|ask)|\bmight (need|contact|ask)|"
     r"\bwill (contact|reach out|be in touch|notify)\b", re.I)
@@ -165,10 +167,12 @@ def action_needed(subject: str, body: str, sender: str = "") -> bool:
     # application to-do when the email is about a job application, or comes from a recruiting system
     if not (is_ats(sender) or _JOB_CONTEXT.search(f"{subject}\n{body[:1500]}")):
         return False
-    if _ACTION.search(subject):
+    receipt = is_receipt_subject(subject)
+    patterns = (_ACTION,) if receipt else (_ACTION, _ACTION_PORTAL)
+    if any(p.search(subject) for p in patterns):
         return True
     for sent in re.split(r"(?<=[.!?])\s+|\n+", body[:1500]):
-        if _ACTION.search(sent) and not _ACTION_HEDGE.search(sent):
+        if any(p.search(sent) for p in patterns) and not _ACTION_HEDGE.search(sent):
             return True
     return False
 

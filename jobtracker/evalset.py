@@ -79,6 +79,7 @@ def _run_scan(since):
             have = {r[0] for r in conn.execute("SELECT gmail_id FROM eval_items")}
             u = conn.execute("SELECT value FROM meta WHERE key='eval_universe'").fetchone()
             uni = json.loads(u[0]) if u else {}
+            uni.setdefault("query_version", gmail.QUERY_VERSION)
             uni.update(unmatched=len(u_ids), n_hot=len(hot), n_cold=len(u_ids) - len(hot), since=uni.get("since") or since.isoformat(),
                        scan_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), headers_read=len(heads))
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('eval_universe', ?)", (json.dumps(uni),))
@@ -117,7 +118,7 @@ def _run_sample(since, n_matched, n_unmatched, seed):
             have = {r[0] for r in conn.execute("SELECT gmail_id FROM eval_items")}
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('eval_universe', ?)", (json.dumps(
                 {"matched": len(m_ids), "unmatched": len(u_ids), "since": since.isoformat(),
-                 "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}),))
+                 "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "query_version": gmail.QUERY_VERSION}),))
         rng = random.Random(seed)
         picks = [(i, "matched") for i in rng.sample([i for i in m_ids if i not in have], min(n_matched, len([i for i in m_ids if i not in have])))]
         picks += [(i, "unmatched") for i in rng.sample([i for i in u_ids if i not in have], min(n_unmatched, len([i for i in u_ids if i not in have])))]
@@ -278,6 +279,10 @@ def _f(x) -> str:
 def markdown(rep: dict) -> str:
     d, e, s, rules, w, srch = rep["detection"], rep["extraction"], rep["status"], rep["rules_only"], rep["wild"], rep["search"]
     L = ["# Evaluation", "",
+         "> **These are the author's results, on the author's mailbox.** Accuracy depends on your own mail (employers, recruiting systems, "
+         "language), so don't treat these figures as a guarantee. To measure yours, set `ENABLE_EVAL=1` in `.env`, open the **Evaluate** tab, "
+         "sample, label and compute metrics. The parser was tuned on part of this sample, so the figures are optimistic until re-measured on a "
+         "fresh held-out sample.", "",
          f"Measured on **{rep['n_matched_labeled']} real emails** the sync search matched and **{rep['n_unmatched_labeled']}** it did not, "
          f"hand-labeled by the mailbox owner. Model: `{rep['model']}`. Intervals are 95% Wilson confidence intervals; with samples this "
          "small, read the interval, not just the point estimate.", "",
@@ -318,6 +323,11 @@ def markdown(rep: dict) -> str:
             f"Because the sample is small, the honest range is **{rng}**, i.e. up to about {srch['missed_upper_bound']} application emails could be "
             "hiding in the unmatched mail; a larger or targeted sample is needed to narrow this."]
     L += ["", "## Does the Gmail search find them? (search recall)", ""]
+    qv = (rep.get("universe") or {}).get("query_version", 1)
+    if qv < gmail.QUERY_VERSION:
+        L += [f"*These figures describe search version {qv}. The search has since been widened (version {gmail.QUERY_VERSION}: recruiting-system "
+              "senders in every Gmail tab and extra wording) and now matches the real emails listed as missed below. A fresh sample is needed to "
+              "measure the current search.*", ""]
     for para in search_text:
         L += [para, ""]
     L += [

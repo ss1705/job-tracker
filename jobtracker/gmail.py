@@ -40,6 +40,12 @@ def matched_core() -> str:
 
 
 
+# bump when the search query changes, so evaluation reports say which version of the search they measured
+#   1 = keywords outside Promotions/Social
+#   2 = + recruiting-system senders and sender names in every tab, + "job application"/"candidate" wording, excludes your own mail
+QUERY_VERSION = 2
+
+
 class AuthRequired(Exception):
     pass
 
