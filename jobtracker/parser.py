@@ -19,7 +19,7 @@ from . import config
 BLOCKED_DOMAINS = (
     "lensa.com", "indeed.com", "linkedin.com", "glassdoor.com", "ziprecruiter.com",
     "handshake.com", "joinhandshake.com", "business.amazon.com", "datacamp.com",
-    "fireflies.ai", "extern.com", "jobright.ai", "simplify.jobs", "ripplematch.co",
+    "fireflies.ai", "extern.com", "jobright.ai", "jobrightai.com", "simplify.jobs", "ripplematch.co",
     # job-posting / recommendation feeds (they email *postings*, not your applications)
     "wellfound.com", "angel.co", "otta.com", "welcometothejungle.com", "builtin.com", "dice.com",
     "monster.com", "careerbuilder.com", "hiring.cafe", "levels.fyi", "wayup.com", "talent.com",
@@ -31,13 +31,13 @@ ATS_DOMAINS = (
     "greenhouse-mail.io", "greenhouse.io", "myworkday.com", "icims.com", "lever.co",
     "ashbyhq.com", "smartrecruiters.com", "jobvite.com", "taleo.net", "successfactors",
     "workable.com", "breezy.hr", "bamboohr.com", "recruitee.com", "hirevue.com", "ultipro.com", "ukg.com",
-    "dayforcehcm.com", "paylocity.com", "adp.com", "oraclecloud.com", "eightfold.ai",
+    "dayforcehcm.com", "paylocity.com", "adp.com", "oraclecloud.com", "eightfold.ai", "workday.com", "jobalerts.career",
 )
 # assessment/scheduling platforms: they send on behalf of the employer, so their name is never the company
 PLATFORM_DOMAINS = ("hackerrank", "codesignal.com", "codility.com", "hirevue.com", "calendly.com",
                     "goodtime.io", "modernhire.com", "karat.com", "testgorilla.com", "criteriacorp.com",
                     "arcticshores.com", "pymetrics.com", "shl.com", "plum.io", "vervoe.com", "harver.com",
-                    "cappfinity.com", "mettl.com", "glider.ai", "coderpad.io", "qualified.io", "devskiller.com")
+                    "cappfinity.com", "mettl.com", "glider.ai", "coderpad.io", "qualified.io", "devskiller.com", "candidate.fyi")
 _GENERIC_NAMES = re.compile(
     r"\b(talent acquisition|talent|recruiting|recruitment|recruiter|careers?|hiring team|hiring|"
     r"human resources|hr|no[- ]?reply|do not reply|noreply|notifications?|workday|myworkday|"
@@ -116,7 +116,7 @@ _STRONG_REJECT = re.compile(
 _WEAK_REJECT = re.compile(r"(unfortunately|other candidates|other applicants|after (careful|further|thorough) (consideration|review))", re.I)
 _OFFER = re.compile(r"(pleased to (offer|extend)|offer letter|offer of employment|extend (you )?an offer|formal offer)", re.I)
 _OA = re.compile(
-    r"(online assessment|coding (challenge|assessment|test)|hackerrank|codesignal|codility|"
+    r"(online assessment|coding (challenge|assessment|test)|hackerrank|codesignal|codility|screening (process|test|round|assessment|questionnaire)|"
     r"(complete|take) (the|this|your) (following )?assessment|take[- ]home|hirevue|technical assessment)", re.I)
 _INTERVIEW = re.compile(
     r"(schedule (an?|your|the) [\w\- ]{0,25}interview|invit\w+ you to (an? )?(interview|a call|speak)|"
@@ -144,7 +144,8 @@ _ACTION = re.compile(
     r"(please\s+)?(complete|fill out|submit|finish)\s+(the|this|your|our)\s+(\w+\s+){0,2}(form|questionnaire|survey|profile|application|self[- ]identification)|"
     r"(please\s+)?(verify|confirm)\s+your\s+e-?mail|"
     r"(please\s+)?(upload|provide|submit|send)\s+(your|the|a)\s+(\w+\s+){0,2}(transcripts?|references?|resume|cv|documents?|work authorization|passport|portfolio)|"
-    r"self[- ]identification|voluntary self|background check (form|authorization)|we (still )?need (you to|some|additional|more))", re.I)
+    r"self[- ]identification|voluntary self|background check (form|authorization)|we (still )?need (you to|some|additional|more)|"
+    r"(confirm|verify) your (identity|candidate)|candidate (portal|account)|magic link)", re.I)
 _ACTION_HEDGE = re.compile(
     r"(\bif\b|\bshould\b|\bin case\b|\bwhenever\b)[^.]{0,80}\b(need|require|request|necessary|additional)|\bmay (contact|reach|request|ask)|\bmight (need|contact|ask)|"
     r"\bwill (contact|reach out|be in touch|notify)\b", re.I)
@@ -158,6 +159,8 @@ _JOB_CONTEXT = re.compile(
 def action_needed(subject: str, body: str, sender: str = "") -> bool:
     """They're asking you for something (a form, documents, verification). A subject match is strong; in the body only an
     un-hedged sentence near the top counts, so "if we need more information we'll contact you" doesn't."""
+    if re.search(r"password|welcome to", subject, re.I):
+        return False                 # account housekeeping (password resets, welcome emails) is not a to-do for an application
     # "verify your email" / "action required" are everywhere (banks, cloud consoles, newsletters): it only counts as an
     # application to-do when the email is about a job application, or comes from a recruiting system
     if not (is_ats(sender) or _JOB_CONTEXT.search(f"{subject}\n{body[:1500]}")):

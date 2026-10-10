@@ -1,6 +1,6 @@
 # Evaluation
 
-Measured on **120 real emails** the sync search matched and **60** it did not, hand-labeled by the mailbox owner. Model: `openai/gpt-oss-120b`. Intervals are 95% Wilson confidence intervals; with samples this small, read the interval, not just the point estimate.
+Measured on **120 real emails** the sync search matched and **179** it did not, hand-labeled by the mailbox owner. Model: `openai/gpt-oss-120b`. Intervals are 95% Wilson confidence intervals; with samples this small, read the interval, not just the point estimate.
 
 ## Is it an application email? (detection)
 
@@ -42,7 +42,11 @@ Confusion matrix (rows = truth, columns = prediction; *Missed* = not detected):
 
 ## Does the Gmail search find them? (search recall)
 
-Of 2254 emails the search did *not* match in the same period, a random sample of 60 contained 0 real application emails (0% (0/60, 95% CI 0–6%)). Point estimate: about **129 found vs 0 missed** (search recall **100%**). Because the sample is small, the honest range is **43% to 100%**, i.e. up to about 136 application emails could be hiding in the unmatched mail; a larger or targeted sample is needed to narrow this.
+I read the subject and sender of **all 2297** emails the search did not match and flagged **120** as plausible application mail (recruiting-system senders or job words in the subject). Of those, 120 were labeled by hand and **5 were real application emails** (every suspect was checked, so this count is exact).
+
+The other 2177 look unrelated; a random sample of 59 of them contained 0 real application emails (0% (0/59, 95% CI 0–6%)).
+
+Estimate: about **129 found vs 5 missed**, search recall **96%** (95% range **42% to 97%**; at most about 138 missed).
 
 ## In real use
 

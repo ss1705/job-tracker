@@ -34,7 +34,7 @@ def _ids(svc, q: str) -> list[str]:
 def queries(since: date) -> tuple[str, str]:
     matched = gmail.build_query(since)
     base = f"after:{(since - timedelta(days=1)):%Y/%m/%d} -from:me -in:spam -in:trash"
-    unmatched = f"{base} -({gmail.QUERY_TERMS} -category:promotions -category:social)"
+    unmatched = f"{base} -{gmail.matched_core()}"
     return matched, unmatched
 
 
@@ -347,7 +347,7 @@ def errors_markdown(conn) -> str:
                 problems.append(f"role: truth {t['role']!r} vs pred {p['role']!r}")
         if problems:
             L += [f"## {i['subject'][:100]}", f"From: {i['sender'][:80]}", *[f"- {x}" for x in problems], "", i["body"][:500].replace("\n", " "), ""]
-    for i in _labeled(conn, "unmatched"):
+    for i in _labeled(conn, "unmatched") + _labeled(conn, "unmatched_hot"):
         if i["truth"]["is_job"]:
             L += [f"## SEARCH MISS: {i['subject'][:100]}", f"From: {i['sender'][:80]}", "", i["body"][:500].replace("\n", " "), ""]
     return "\n".join(L)

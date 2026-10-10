@@ -211,3 +211,27 @@ def test_greenhouse_style_receipt_subject_and_action_survives_llm_veto(monkeypat
     assert kept.is_job and kept.status == "Action"
     gone = parse_email("Thanks for applying", "Foo <hi@foo.com>", "Thank you for applying to our team.")        # an ordinary rule result can still be vetoed
     assert not gone.is_job
+
+
+def test_lessons_from_the_search_misses():
+    # a screening invitation from an employer's recruiting subdomain
+    p = P("Congratulations! You are invited to our screening process", "Hewlett Packard Enterprise <recruiting@jobalerts.careers.hpe.com>",
+          "Thanks for your interest in joining us as a Graduate Software Engineer. You're invited to participate in our screening process!")
+    assert p.is_job and p.status == "OA" and p.company == "Hewlett Packard Enterprise"
+    # candidate portals and identity confirmation are requests; password resets are not
+    assert P("Your Candidate Portal Magic Link", '"candidate.fyi" <noreply@candidate.fyi>', "Use the link to access your candidate portal for Acme.").status == "Action"
+    assert P("Confirm your identity for job Data Engineer - 20370", "EXL <notify@exl.com>",
+             "We need you to confirm your identity so that your job application is considered.").status == "Action"
+    assert P("Verify your candidate account", "massmutual@otp.workday.com", "Click this link to confirm your email address.").status == "Action"
+    assert P("Reset your password for your candidate account", "do-not-reply adobe <adobe@otp.workday.com>", "Click to reset your password.").status != "Action"
+    # marketing from the Jobright domain is never an application email (it used to look like an action request)
+    assert not P("[Get Free Interview Cheat Sheet] We are eager to make improvements", "Eric <eric@jobrightai.com>", "Thank you for giving Jobright a try.").is_job
+
+
+def test_search_query_covers_recruiting_senders_in_every_tab():
+    from datetime import date
+    from jobtracker import gmail
+    q = gmail.build_query(date(2026, 10, 1))
+    assert "from:(" in q and "recruiting" in q and "myworkday.com" in q and "candidate.fyi" in q
+    assert '"job application"' in q and '"candidate"' in q
+    assert q.count("-category:promotions") == 1 and "OR from:(" in q            # the tab exclusion applies to keywords only

@@ -12,7 +12,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from . import config
-from .parser import html_to_text
+from .parser import ATS_DOMAINS, PLATFORM_DOMAINS, html_to_text
 
 READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"      # only used to email the daily digest to yourself
@@ -23,8 +23,21 @@ QUERY_TERMS = (
     'OR "received your application" OR "application update" OR "application status" OR "update on your" '
     'OR "next steps" OR "moving forward" OR "interview" OR "assessment" OR "unfortunately" OR "offer" '
     'OR "your candidacy" OR "your submission" OR "online submission" OR "application has been" '
-    'OR "we have received" OR "we\'ve received" OR "screening" OR "invited to" OR "thank you for your interest"'
+    'OR "we have received" OR "we\'ve received" OR "screening" OR "invited to" OR "thank you for your interest" '
+    'OR "job application" OR "candidate" OR "candidacy"'
 )
+
+# Recruiting-system senders are searched in EVERY Gmail tab: Gmail files some of them under Promotions or Social,
+# which the keyword clause excludes, and real mail (screening invitations, portal links) was being missed that way.
+# plus sender names that say "recruiting" (employers' own senders like recruiting@jobalerts.careers.hpe.com, filed under Promotions)
+SENDER_NAMES = ("recruiting", "recruiter", "recruitment", "careers", "talent", "hiring")
+SENDER_TERMS = " OR ".join(sorted({d for d in (*ATS_DOMAINS, *PLATFORM_DOMAINS) if d not in ("adp.com", "shl.com")} | set(SENDER_NAMES)))
+
+
+def matched_core() -> str:
+    """The Gmail clause for 'application mail': keywords outside Promotions/Social, OR a known recruiting-system sender anywhere."""
+    return f"((({QUERY_TERMS}) -category:promotions -category:social) OR from:({SENDER_TERMS}))"
+
 
 
 class AuthRequired(Exception):
@@ -92,7 +105,7 @@ def build_query(since: date, until: date | None = None) -> str:
     # Gmail evaluates after:/before: in Pacific time, so for US-east (or any other) users the first/last
     # hours of a day can fall outside the range. Pad by a day; already-seen emails are skipped anyway.
     since = since - timedelta(days=1)
-    q = f"({QUERY_TERMS}) after:{since:%Y/%m/%d} -from:me -category:promotions -category:social -in:spam -in:trash"
+    q = f"{matched_core()} after:{since:%Y/%m/%d} -from:me -in:spam -in:trash"
     if until:
         q += f" before:{(until + timedelta(days=2)):%Y/%m/%d}"
     return q
