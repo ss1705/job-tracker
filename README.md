@@ -79,6 +79,15 @@ the email's own date, times are converted to your timezone, implausible dates ar
 badge on the application, in the daily digest, and each has an **Add to calendar** download (with reminders a day and two hours
 before). A reschedule email moves the existing one. You can also add your own (a recruiter call, say) and mark items done.
 
+## Action needed
+
+Some emails aren't a status at all: the company needs something from you (an additional-information form, documents, email
+verification, a work-authorization form). They're classified as **Action needed**, which flags the application with what was asked
+(badge, Coming up strip, daily digest) without changing its status. It clears when you mark it done or a later email shows progress,
+and a stated deadline becomes an *Action due* milestone. It only counts when the email is about a job application or comes from a
+recruiting system, so "verify your email" from a bank or a cloud console is ignored, and "if we need more information we'll contact you"
+in an ordinary receipt doesn't trigger it. You can also flag any application yourself (**Needs my action**).
+
 ## Evaluation
 
 The **Evaluate** tab samples real emails from your mailbox (some the search finds, some it doesn't), shows the parser's prediction, and

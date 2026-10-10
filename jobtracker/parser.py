@@ -108,7 +108,7 @@ _STRONG_REJECT = re.compile(
     r"position (has been|was|is) (now )?(filled|closed)|no longer (being )?consider|not (been )?selected|"
     r"not a (good )?(match|fit)|we regret|decided not to (move|proceed|pursue|advance)|"
     r"will not (be )?(advance|advancing|continu)|not (be )?(advance|advancing) (your|you)|"
-    r"unable to (offer|move forward|proceed)|(not|n't) (be )?able to (move|proceed) forward|"
+    r"(only able to|unable to|not able to|will not be able to) consider|(cannot|can.?t) consider|unable to (offer|move forward|proceed)|(not|n't) (be )?able to (move|proceed) forward|"
     r"decided to (move|go|proceed|pursue)( forward)? with (candidates|applicants|those|a candidate)|"
     r"(move|moving) forward with (candidates|applicants)|(closer|better) (fit|match))",
     re.I,
@@ -136,6 +136,47 @@ _OUTCOME_HINT = re.compile(
 _HOLD = re.compile(r"(still under consideration|await to share next steps|remain under review)", re.I)
 
 
+_ACTION = re.compile(
+    r"(additional info(rmation)?\s+(is\s+)?(needed|required|requested)|(need|require|request)(s|ed|ing)?\s+(some\s+|an?\s+)?(additional|more|further)\s+(info|documentation|documents)|"
+    r"action\s+(is\s+)?(required|needed)|(application|profile)\s+(is\s+)?(incomplete|not complete)|incomplete\s+application|"
+    r"to complete your application|finish your application|"
+    r"(please\s+)?(complete|fill out|submit|finish)\s+(the|this|your|our)\s+(\w+\s+){0,2}(form|questionnaire|survey|profile|application|self[- ]identification)|"
+    r"(please\s+)?(verify|confirm)\s+your\s+e-?mail|"
+    r"(please\s+)?(upload|provide|submit|send)\s+(your|the|a)\s+(\w+\s+){0,2}(transcripts?|references?|resume|cv|documents?|work authorization|passport|portfolio)|"
+    r"self[- ]identification|voluntary self|background check (form|authorization)|we (still )?need (you to|some|additional|more))", re.I)
+_ACTION_HEDGE = re.compile(
+    r"(\bif\b|\bshould\b|\bin case\b|\bwhenever\b)[^.]{0,80}\b(need|require|request|necessary|additional)|\bmay (contact|reach|request|ask)|\bmight (need|contact|ask)|"
+    r"\bwill (contact|reach out|be in touch|notify)\b", re.I)
+
+
+_JOB_CONTEXT = re.compile(
+    r"(\b(your|job|the)\s+application\b|\bapplication\s*:|\bcandidate\b|\bapplicant\b|\brecruit(er|ment|ing)?\b|\bhiring\b|"
+    r"talent (acquisition|team)|\bcareers?\b|\bposition\b|\brequisition\b|\bresume\b|\bcv\b|\bjob (opening|posting|opportunity)\b|\binterview\b)", re.I)
+
+
+def action_needed(subject: str, body: str, sender: str = "") -> bool:
+    """They're asking you for something (a form, documents, verification). A subject match is strong; in the body only an
+    un-hedged sentence near the top counts, so "if we need more information we'll contact you" doesn't."""
+    # "verify your email" / "action required" are everywhere (banks, cloud consoles, newsletters): it only counts as an
+    # application to-do when the email is about a job application, or comes from a recruiting system
+    if not (is_ats(sender) or _JOB_CONTEXT.search(f"{subject}\n{body[:1500]}")):
+        return False
+    if _ACTION.search(subject):
+        return True
+    for sent in re.split(r"(?<=[.!?])\s+|\n+", body[:1500]):
+        if _ACTION.search(sent) and not _ACTION_HEDGE.search(sent):
+            return True
+    return False
+
+
+def action_summary(subject: str, body: str) -> str:
+    """One line on what they're asking for: the sentence that triggered it, else the subject."""
+    for sent in re.split(r"(?<=[.!?])\s+|\n+", re.sub(r"https?://\S+", "", body[:1500])):
+        if _ACTION.search(sent) and not _ACTION_HEDGE.search(sent) and 15 < len(sent.strip()) < 220:
+            return " ".join(sent.split())[:200]
+    return " ".join(subject.split())[:200]
+
+
 def is_receipt_subject(subject: str) -> bool:
     """True for genuine application-receipt subjects ("Thank you for applying…"), not reminders/updates."""
     return bool(_APPLIED.search(subject)) and not re.search(r"reminder|verify|incomplete|update", subject, re.I)
@@ -155,6 +196,8 @@ def rule_status(subject: str, body: str, sender: str = "") -> str | None:
         return "OA"
     if _INTERVIEW.search(head):
         return "Interview"
+    if action_needed(subject, body, sender):
+        return "Action"
     if _APPLIED.search(subject) or _APPLIED.search(body[:800]):
         return "Applied"
     if _HOLD.search(head):
@@ -293,6 +336,8 @@ Rules:
   Applied   - application received / thank you for applying / confirmation
   OA        - online assessment, coding challenge, HackerRank/CodeSignal/HireVue invite
   Interview - invitation to schedule, or confirmation of, any interview or recruiter call
+  Action    - the company needs something from the candidate: an additional-information form, documents, profile completion,
+              email verification, a work-authorization or self-identification form (NOT a plain receipt that merely says it may ask later)
   Rejected  - not moving forward, position filled, other candidates selected, etc.
   Offer     - job offer
   None      - cannot be determined (e.g. generic "we have an update" with no outcome)
@@ -301,7 +346,7 @@ Rules:
   or anything that is not about a specific application the user submitted.
 - A message saying the candidate is "still under consideration" is status None, not Rejected.
 
-Return ONLY JSON: {{"is_job_related": bool, "company": str, "role": str, "status": "Applied|OA|Interview|Rejected|Offer|None"}}"""
+Return ONLY JSON: {{"is_job_related": bool, "company": str, "role": str, "status": "Applied|OA|Interview|Rejected|Offer|Action|None"}}"""
 
 from . import llm                      # noqa: E402  (shared Groq helper)
 from .llm import LLMExhausted          # noqa: E402,F401  (re-exported: sync.py imports it from here)
@@ -366,7 +411,7 @@ def parse_email(subject: str, sender: str, body: str, use_llm: bool = True, extr
                 return p
             p.is_job = True
             # rules win on status when they fired, except the weak "Applied" guess, which the LLM may overrule
-            llm_status = out.get("status") if out.get("status") in config.STATUSES else None
+            llm_status = out.get("status") if out.get("status") in config.EMAIL_STATUSES else None
             if p.status in (None, "Applied"):
                 p.status = llm_status or p.status
             p.company = out.get("company") or p.company

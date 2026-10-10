@@ -120,6 +120,7 @@ def list_applications():
         for m in milestones.upcoming(conn, today, 365):          # ordered by date: the first one per application is the next
             nxt.setdefault(m["application_id"], m)
     for a in apps:
+        a["action_open"] = bool(a["action_at"]) and not a["action_done"]
         m = nxt.get(a["id"])
         a["next_milestone"] = {"id": m["id"], "kind": m["kind"], "days": m["days"], "when": m["when"]} if m else None
         last_local = sync.local_date(a["last_event_at"]) if a["last_event_at"] else None
@@ -185,6 +186,30 @@ def split_application(app_id: int, body: SplitRequest):
         except ValueError as e:
             raise HTTPException(422, str(e))
     return {"new_id": new_id}
+
+
+class ActionBody(BaseModel):
+    note: str = ""
+
+
+@app.post("/api/applications/{app_id}/action")
+def flag_action(app_id: int, body: ActionBody):
+    """Flag by hand that this application is waiting on something from you."""
+    with db.session() as conn:
+        cur = conn.execute("UPDATE applications SET action_note=?, action_at=?, action_done=0 WHERE id=?",
+                           (body.note.strip()[:200] or "Action needed", date.today().isoformat(), app_id))
+        if not cur.rowcount:
+            raise HTTPException(404)
+    return {"ok": True}
+
+
+@app.post("/api/applications/{app_id}/action-done")
+def action_done(app_id: int):
+    with db.session() as conn:
+        cur = conn.execute("UPDATE applications SET action_done=1 WHERE id=?", (app_id,))
+        if not cur.rowcount:
+            raise HTTPException(404)
+    return {"ok": True}
 
 
 @app.post("/api/applications/{app_id}/followed-up")
@@ -271,7 +296,8 @@ def stats():
             "follow_up": sum(a["follow_up_due"] for a in apps),
             "deadline_soon": sum(1 for a in apps if a["deadline_days"] is not None and a["deadline_days"] <= 3),
             "contacts": len(people), "contacts_due": sum(c["follow_up_due"] for c in people),
-            "contacts_to_sort": sum(1 for c in people if c["needs_triage"])}
+            "contacts_to_sort": sum(1 for c in people if c["needs_triage"]),
+            "actions_open": sum(1 for a in apps if a["action_open"])}
 
 
 @app.post("/api/sync")

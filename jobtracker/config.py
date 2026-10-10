@@ -13,6 +13,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 STATUSES = ["Saved", "Applied", "OA", "Interview", "Offer", "Rejected", "Withdrawn"]
+# what an email can be classified as: an application status, or "Action" (they need something from you: a form, documents, verification)
+EMAIL_STATUSES = [*STATUSES, "Action"]
 # tried in order when the primary model's daily token quota (free tier: 200k/day per model) is used up
 GROQ_FALLBACK_MODELS = [m.strip() for m in os.getenv("GROQ_FALLBACK_MODELS", "openai/gpt-oss-20b,qwen/qwen3.8-27b").split(",") if m.strip()]
 # extra sender substrings (domains or addresses) to ignore, e.g. BLOCKED_SENDERS=somecommunity.org,jobs@example.com

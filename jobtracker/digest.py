@@ -40,6 +40,10 @@ def build(apps: list[dict], people: list[dict], events: list[dict], responses: l
           upcoming: list[dict] | None = None) -> dict | None:
     sections: list[tuple[str, list[str]]] = []
 
+    todo = [a for a in apps if a.get("action_open")]
+    if todo:
+        sections.append(("Needs your input", [f"{a['company']}" + (f" ({a['role']})" if a["role"] else "") + f": {a['action_note']}" for a in todo]))
+
     soon = sorted((m for m in (upcoming or []) if not m.get("done") and -1 <= m["days"] <= 3), key=lambda m: m["due_at"])
     if soon:
         sections.append(("Coming up", [f"{m['kind']}: {m['company']}" + (f" ({m['role']})" if m.get("role") else "") + f" — {m['when']}" for m in soon]))
@@ -78,6 +82,7 @@ def build(apps: list[dict], people: list[dict], events: list[dict], responses: l
     n = sum(len(items) for _, items in sections)
     bits = []
     if soon: bits.insert(0, f"{len(soon)} coming up")
+    if todo: bits.insert(0, f"{len(todo)} need{'s' if len(todo) == 1 else ''} your input")
     if lines: bits.append(f"{len(lines)} new response{'s' if len(lines) != 1 else ''}")
     follow = len(due_people) + len(due_apps)
     if follow: bits.append(f"{follow} to follow up")

@@ -123,3 +123,42 @@ def test_receipt_subject_detection():
     assert is_receipt_subject("We received your Stripe Application")
     assert not is_receipt_subject("Roblox Application: Reminder to Verify Your Email Address")
     assert not is_receipt_subject("[Update] Your Roblox Job Application")
+
+
+def test_action_needed_emails_are_recognised_but_hedged_receipts_are_not():
+    imc = P("Acme Application: Additional Info Needed", "Campus <campus@acme.com>",
+            "You are receiving this request for additional information because you answered Yes to the sponsorship question. "
+            "Completion of this form is needed in order to process your application, so please complete it at your earliest convenience.")
+    assert imc.status == "Action" and imc.is_job
+    verify = P("Zeta Application: Reminder to Verify Your Email Address", "no-reply@email.zeta.com",
+               "We haven't heard from you. Please verify your email address to proceed to the next stage of your recruitment process.")
+    assert verify.status == "Action"
+    incomplete = P("Your job application is incomplete!", '"Beta @ icims" <beta+autoreply@talent.icims.com>', "Finish your application to be considered.")
+    assert incomplete.status == "Action" and incomplete.company == "Beta"
+
+    # ordinary receipts that merely mention possible future requests must stay receipts
+    receipt = P("Thank you for applying to Acme!", "Acme <no-reply@us.greenhouse-mail.io>",
+                "Thanks for applying. If we need additional information, we will contact you. Our team will review your application.")
+    assert receipt.status == "Applied"
+    assert P("Your HackerRank assessment", "Acme <no-reply@acme.com>", "Please complete the online assessment within 7 days.").status == "OA"
+    assert P("Rejection", "Acme <no-reply@acme.com>", "Unfortunately we will not be moving forward. Please verify your email.").status == "Rejected"   # outcomes outrank requests
+
+
+def test_action_summary_picks_the_request_not_the_boilerplate():
+    from jobtracker.parser import action_summary
+    s = action_summary("Additional Info Needed", "Hello Alex. Thanks for your interest. Completion of this form is needed, so please complete the form soon. Regards.")
+    assert "please complete the form" in s
+    assert action_summary("Additional Info Needed", "Hello. Regards.") == "Additional Info Needed"
+
+
+def test_action_needs_job_context_and_eligibility_rejections_are_rejections():
+    # generic "verify / action required" mail from non-recruiting senders is not an application to-do
+    assert P("[Action Required] Transition your scripts to the new tool", "Google Cloud <noreply@google.com>", "Please update your workflows before March.").status is None
+    assert not P("Verify your email address", "Streamlit <no-reply@streamlit.io>", "Please verify your email address to continue.").is_job
+    assert not P("Confirmation on e-Verification of Income Tax Return", "tax@gov.in", "Your return was e-verified. Please confirm your email.").is_job
+    # but the same words from a recruiting system or in an application context do count
+    assert P("Verify your candidate account", "Barclays <barclays@barclays.com>", "Please verify your email to continue.").status == "Action"
+    assert P("Please verify your email", "Acme <no-reply@us.greenhouse-mail.io>", "Verify your email address to finish.").status == "Action"
+    body = ("Thank you for applying. During the application process you indicated you are not authorized to work in the U.S. "
+            "At this time we are only able to consider candidates who do not require sponsorship. If this selection was made in error, please reply.")
+    assert P("Application Follow Up", "no-reply@getgarner.com", body).status == "Rejected"

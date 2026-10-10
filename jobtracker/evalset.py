@@ -87,14 +87,14 @@ def _run_sample(since, n_matched, n_unmatched, seed):
         _lock.release()
 
 
-def start_predict() -> bool:
+def start_predict(redo: bool = False) -> bool:
     if not _lock.acquire(blocking=False):
         return False
     state.update(running=True, phase="Running the pipeline…", done=0, total=0, error="")
 
     def run():
         try:
-            _predict_pending()
+            _predict_pending(redo=redo)
         except Exception as e:
             state["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -104,9 +104,10 @@ def start_predict() -> bool:
     return True
 
 
-def _predict_pending():
+def _predict_pending(redo: bool = False):
+    """Fill in missing predictions; with redo, recompute all of them in place (old ones stay until replaced)."""
     with db.session() as conn:
-        rows = conn.execute("SELECT id, kind, subject, sender, body FROM eval_items WHERE pred_json='' ORDER BY id").fetchall()
+        rows = conn.execute(f"SELECT id, kind, subject, sender, body FROM eval_items {'' if redo else 'WHERE pred_json=' + chr(39) * 2} ORDER BY id").fetchall()
         extra = _blocked(conn)
     state.update(phase="Running the pipeline…", total=len(rows), done=0)
     for r in rows:
@@ -134,6 +135,28 @@ def next_item(conn, after_id: int = 0, kind: str | None = None) -> dict | None:
     if r is None and after_id:
         return next_item(conn, 0, kind)             # wrap around to skipped items
     return _row(r) if r else None
+
+
+def get_item(conn, item_id: int) -> dict | None:
+    r = conn.execute("SELECT * FROM eval_items WHERE id=?", (item_id,)).fetchone()
+    return _row(r) if r else None
+
+
+def list_labeled(conn, limit: int = 400) -> list[dict]:
+    """Labeled emails, newest label first, with whether you corrected the pipeline's guess."""
+    out = []
+    for r in conn.execute("SELECT * FROM eval_items WHERE truth_json<>'' ORDER BY labeled_at DESC, id DESC LIMIT ?", (limit,)):
+        t, p = json.loads(r["truth_json"]), (json.loads(r["pred_json"]) if r["pred_json"] else None)
+        same = bool(p) and t["is_job"] == p["is_job"] and (not t["is_job"] or (
+            evalmetrics.norm_status(t["status"]) == evalmetrics.norm_status(p["status"])
+            and evalmetrics.company_match(t["company"], p["company"]) and evalmetrics.role_match(t["role"], p["role"])))
+        out.append({"id": r["id"], "kind": r["kind"], "subject": r["subject"], "sender": r["sender"], "received_at": r["received_at"][:10],
+                    "truth": t, "corrected": not same, "labeled_at": r["labeled_at"]})
+    return out
+
+
+def unlabel(conn, item_id: int) -> None:
+    conn.execute("UPDATE eval_items SET truth_json='', labeled_at=NULL WHERE id=?", (item_id,))
 
 
 def label(conn, item_id: int, truth: dict) -> None:

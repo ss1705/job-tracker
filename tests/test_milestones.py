@@ -120,3 +120,43 @@ def test_time_limit_phrasings_reach_the_model(env, monkeypatch):
     assert len(seen) == 4
     monkeypatch.setattr(m.llm, "chat_json", lambda *a, **k: pytest.fail("no date or time limit in this email"))
     assert m.extract("Thanks for taking the test", "Thanks for completing the assessment. We will be in touch.", RECEIVED) == []
+
+
+def test_action_emails_flag_the_application_until_resolved(env):
+    c, db, m, sync = env
+    from jobtracker.parser import Parsed
+    mk = lambda i, subj, body, ts: {"id": i, "subject": subj, "sender": "Acme <no-reply@acme.com>", "body": body, "received_at": ts}
+    with db.session() as conn:
+        sync.apply_parsed(conn, mk("a", "Thanks for applying", "Thanks for applying to the SWE role.", "2026-10-01T18:00:00"),
+                          Parsed(is_job=True, company="Acme", role="SWE", status="Applied"))
+        sync.apply_parsed(conn, mk("b", "Additional info needed", "Please complete the attached form so we can process your application.", "2026-10-03T18:00:00"),
+                          Parsed(is_job=True, company="Acme", role="SWE", status="Action"))
+    a = c.get("/api/applications").json()[0]
+    assert a["status"] == "Applied" and a["action_open"] and "complete the attached form" in a["action_note"]   # status is NOT changed
+    assert c.get("/api/stats").json()["actions_open"] == 1
+
+    from jobtracker import digest
+    d = digest.collect()
+    assert d and "1 needs your input" in d["subject"] and "NEEDS YOUR INPUT" in d["text"] and "Acme (SWE): Please complete the attached form" in d["text"]
+
+    # the application is created as 'Applied' even when the first email we see is an action request
+    with db.session() as conn:
+        sync.apply_parsed(conn, mk("c", "Verify your email", "Please verify your email address.", "2026-10-04T18:00:00"),
+                          Parsed(is_job=True, company="Zeta", status="Action"))
+    zeta = next(x for x in c.get("/api/applications").json() if x["company"] == "Zeta")
+    assert zeta["status"] == "Applied" and zeta["action_open"]
+
+    # a later email showing progress resolves it; so does marking it done
+    with db.session() as conn:
+        sync.apply_parsed(conn, mk("d", "Your assessment", "Complete the assessment.", "2026-10-06T18:00:00"),
+                          Parsed(is_job=True, company="Acme", role="SWE", status="OA"))
+    acme = next(x for x in c.get("/api/applications").json() if x["company"] == "Acme")
+    assert acme["status"] == "OA" and not acme["action_open"]
+    assert c.post(f"/api/applications/{zeta['id']}/action-done").status_code == 200
+    assert c.get("/api/stats").json()["actions_open"] == 0
+
+    # flag by hand (for requests the parser never saw)
+    assert c.post(f"/api/applications/{acme['id']}/action", json={"note": "Send transcript"}).status_code == 200
+    again = next(x for x in c.get("/api/applications").json() if x["company"] == "Acme")
+    assert again["action_open"] and again["action_note"] == "Send transcript"
+    assert c.post("/api/applications/999/action", json={}).status_code == 404

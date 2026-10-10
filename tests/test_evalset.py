@@ -85,3 +85,23 @@ def test_predict_label_report_and_markdown(client):
 def test_report_needs_labels_first(client):
     c, db, evalset = client
     assert c.get("/api/eval/report").status_code == 409
+
+
+def test_relabel_edit_and_unlabel(client):
+    c, db, evalset = client
+    seed(db, evalset)
+    first = c.get("/api/eval/next").json()["item"]
+    assert c.post(f"/api/eval/{first['id']}/label", json=dict(is_job=False)).status_code == 200      # a mislabel
+    row = next(i for i in c.get("/api/eval/labeled").json() if i["id"] == first["id"])
+    assert row["truth"]["is_job"] is False and row["corrected"] is True                            # differs from the pipeline's guess
+
+    item = c.get(f"/api/eval/item/{first['id']}").json()["item"]
+    assert item["truth"]["is_job"] is False and item["pred"]["is_job"] is True                     # the UI can prefill from the saved label
+    c.post(f"/api/eval/{first['id']}/label", json=dict(is_job=True, company="Acme", role="Software Engineer", status="Applied"))
+    again = next(i for i in c.get("/api/eval/labeled").json() if i["id"] == first["id"])
+    assert again["truth"]["is_job"] is True and again["truth"]["company"] == "Acme"                # overwritten, not duplicated
+    assert c.get("/api/eval/summary").json()["labeled"] == 1
+
+    assert c.post(f"/api/eval/{first['id']}/unlabel").json()["labeled"] == 0
+    assert c.get("/api/eval/next").json()["item"]["id"] == first["id"]                             # back in the queue
+    assert c.post("/api/eval/9999/unlabel").status_code == 404 and c.get("/api/eval/item/9999").status_code == 404

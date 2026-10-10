@@ -1,14 +1,14 @@
 """Metrics for the email-parsing pipeline. Pure functions over labeled items, so they are easy to test.
 
 An item is {truth: {is_job, company, role, status}, pred: {is_job, company, role, status}}.
-Status labels: Applied / OA / Interview / Offer / Rejected / Other ("Other" = job-related but no clear outcome).
+Status labels: Applied / OA / Interview / Offer / Rejected / Action (they need something from you) / Other ("Other" = job-related but no clear outcome).
 """
 import math
 from collections import Counter, defaultdict
 
 from . import db
 
-STATUS_LABELS = ["Applied", "OA", "Interview", "Offer", "Rejected", "Other"]
+STATUS_LABELS = ["Applied", "OA", "Interview", "Offer", "Rejected", "Action", "Other"]
 
 
 def norm_status(s: str | None) -> str:

@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from datetime import date
 
 from . import config, db, gmail, milestones, outreach
-from .parser import LLMExhausted, Parsed, is_receipt_subject, parse_email
+from .parser import LLMExhausted, Parsed, action_summary, is_receipt_subject, parse_email
 
 # lifecycle ranking used to decide the "current" status of an application
 _ORDER = {"Saved": 0, "Applied": 1, "OA": 2, "Interview": 3, "Offer": 4}
@@ -73,7 +73,7 @@ def apply_parsed(conn, msg: dict, p: Parsed, out: dict | None = None) -> str:
             """INSERT INTO applications (company, company_key, role, req_id, job_type, source, status, needs_review)
                VALUES (?,?,?,?,?,?,?,?)""",
             (p.company, db.company_key(p.company), p.role, p.req_id, p.job_type, "Email",
-             p.status or "Applied", int(not p.status or force_new)),
+             p.status if p.status in config.STATUSES else "Applied", int(not p.status or force_new)),
         )
         app_id = cur.lastrowid
     else:
@@ -95,6 +95,14 @@ def apply_parsed(conn, msg: dict, p: Parsed, out: dict | None = None) -> str:
          " ".join(msg["body"].split())[:400]),
     )
     recompute(conn, app_id)
+    day = local_date(msg["received_at"])
+    if p.status == "Action":          # they need something from you: flag it until you mark it done or a later email shows progress
+        conn.execute("UPDATE applications SET action_note=?, action_at=?, action_done=0 WHERE id=?",
+                     (action_summary(msg["subject"], msg["body"]), day, app_id))
+    elif p.status in ("OA", "Interview", "Offer", "Rejected"):
+        conn.execute("UPDATE applications SET action_done=1 WHERE id=? AND action_at IS NOT NULL AND action_at <= ?", (app_id, day))
+    elif p.status == "Applied":
+        conn.execute("UPDATE applications SET action_done=1 WHERE id=? AND action_at IS NOT NULL AND action_at < ?", (app_id, day))
     if out is not None:
         out["app_id"] = app_id
     return "needs_review" if review else "linked"
@@ -227,7 +235,7 @@ def run_sync(since: date, until: date | None = None, reprocess_linkedin: bool = 
                     state.updated += int(after == before)
                     state.review += int(outcome == "needs_review")
                 conn.execute("INSERT OR REPLACE INTO seen_messages (gmail_id, outcome) VALUES (?,?)", (msg["id"], outcome))
-            if landed.get("app_id") and p.status in ("OA", "Interview"):
+            if landed.get("app_id") and p.status in ("OA", "Interview", "Action"):
                 capture_milestones(landed["app_id"], msg)       # after the write is committed: the LLM call can be slow
             state.done += 1
         state.message = "Done"

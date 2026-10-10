@@ -41,9 +41,13 @@ def sample(body: SampleRequest):
     return {"started": True}
 
 
+class PredictRequest(BaseModel):
+    redo: bool = False        # re-run the pipeline on every sampled email (after improving the parser), replacing old predictions
+
+
 @router.post("/predict")
-def predict():
-    return {"started": evalset.start_predict()}
+def predict(body: PredictRequest | None = None):
+    return {"started": evalset.start_predict(redo=bool(body and body.redo))}
 
 
 @router.get("/next")
@@ -52,10 +56,34 @@ def next_item(after_id: int = 0, kind: str | None = None):
         return {"item": evalset.next_item(conn, after_id, kind if kind in ("matched", "unmatched") else None)}
 
 
+@router.get("/labeled")
+def labeled():
+    with db.session() as conn:
+        return evalset.list_labeled(conn)
+
+
+@router.get("/item/{item_id}")
+def item(item_id: int):
+    with db.session() as conn:
+        it = evalset.get_item(conn, item_id)
+    if not it:
+        raise HTTPException(404)
+    return {"item": it}
+
+
+@router.post("/{item_id}/unlabel")
+def unlabel(item_id: int):
+    with db.session() as conn:
+        if not conn.execute("SELECT 1 FROM eval_items WHERE id=?", (item_id,)).fetchone():
+            raise HTTPException(404)
+        evalset.unlabel(conn, item_id)
+        return evalset.summary(conn)
+
+
 @router.post("/{item_id}/label")
 def label(item_id: int, body: LabelRequest):
-    if body.status is not None and body.status not in ("Applied", "OA", "Interview", "Offer", "Rejected", "Other"):
-        raise HTTPException(422, "status must be Applied, OA, Interview, Offer, Rejected or Other")
+    if body.status is not None and body.status not in ("Applied", "OA", "Interview", "Offer", "Rejected", "Action", "Other"):
+        raise HTTPException(422, "status must be Applied, OA, Interview, Offer, Rejected, Action or Other")
     with db.session() as conn:
         if not conn.execute("SELECT 1 FROM eval_items WHERE id=?", (item_id,)).fetchone():
             raise HTTPException(404)

@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS applications (
     applied_at TEXT,                        -- ISO date
     last_event_at TEXT,
     deadline TEXT,                          -- for Saved postings: apply-by date
+    action_note TEXT NOT NULL DEFAULT '',   -- what a company asked for (form, documents, verification)
+    action_at TEXT,                         -- date of that request
+    action_done INTEGER NOT NULL DEFAULT 0,
     follow_up_at TEXT,                      -- manual reminder date (a future date also snoozes auto reminders)
     followed_up_at TEXT,                    -- last time the user marked 'followed up'
     contact_type TEXT NOT NULL DEFAULT '',  -- Referral / Coffee chat / Recruiter: enables follow-up reminders
@@ -147,7 +150,7 @@ def init_db():
     with session() as conn:
         conn.executescript(SCHEMA)
         have = {r["name"] for r in conn.execute("PRAGMA table_info(applications)")}
-        added = {"deadline": "TEXT", "follow_up_at": "TEXT", "followed_up_at": "TEXT",       # upgrade older databases
+        added = {"action_note": "TEXT NOT NULL DEFAULT ''", "action_at": "TEXT", "action_done": "INTEGER NOT NULL DEFAULT 0", "deadline": "TEXT", "follow_up_at": "TEXT", "followed_up_at": "TEXT",       # upgrade older databases
                  "contact_type": "TEXT NOT NULL DEFAULT ''", "contact_name": "TEXT NOT NULL DEFAULT ''"}
         for col, ddl in added.items():
             if col not in have:

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from . import config, llm
 
-KINDS = ["OA due", "Interview", "Call", "Other"]
+KINDS = ["OA due", "Action due", "Interview", "Call", "Other"]
 
 _ZONES = {"PT": "America/Los_Angeles", "PST": "America/Los_Angeles", "PDT": "America/Los_Angeles",
           "ET": "America/New_York", "EST": "America/New_York", "EDT": "America/New_York",
@@ -60,7 +60,8 @@ EMAIL:
 RULES
 - Only dates the email states explicitly, or "within N days/hours of this email" (give within_days / within_hours, do not compute it).
 - For a weekday without a date ("Tuesday at 2 PM"), give the next such weekday after {received}.
-- "kind": "OA due" for a deadline to complete an assessment/challenge/survey/form; "Interview" for a scheduled interview;
+- "kind": "OA due" for a deadline to complete an assessment or coding challenge; "Action due" for a deadline to submit requested
+  information, a form, documents or a verification; "Interview" for a scheduled interview;
   "Call" for a scheduled recruiter or phone call; "Other" otherwise.
 - "when": "YYYY-MM-DD" if no time is given, else "YYYY-MM-DDTHH:MM" (24-hour) exactly as the email states it, with "tz" the zone
   abbreviation the email gives (PT, ET, UTC, IST...), or "" if none is given.

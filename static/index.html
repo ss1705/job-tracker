@@ -278,12 +278,19 @@
     <section class="card">
       <div class="row"><strong>Evaluation set</strong><span id="evalProgress" class="muted" style="font-size:13px"></span><span style="flex:1"></span>
         <button id="evalSampleBtn" title="Pick random emails from your mailbox: some the search finds, some it doesn't">Sample my mailbox</button>
-        <button id="evalPredictBtn" title="Run the parser on sampled emails that have no prediction yet">Run pipeline</button></div>
+        <button id="evalPredictBtn" title="Run the parser on sampled emails that have no prediction yet">Run pipeline</button>
+        <button id="evalRedoBtn" title="Re-run the improved parser on every sampled email (your labels are kept)">Re-run on all</button></div>
       <div class="muted" style="font-size:12px;margin-top:6px">Label real emails to measure how well the tracker works. Judge each email first; the prediction is only a starting point. Everything stays on this Mac (data/, never in git).</div>
       <div id="evalJob" class="muted" style="font-size:13px;margin-top:6px"></div>
     </section>
 
     <section class="card" id="evalCard" style="margin-top:16px" hidden></section>
+
+    <section class="card" style="margin-top:16px">
+      <div class="row"><strong>Labeled emails</strong><span id="evLabeledCount" class="muted" style="font-size:13px"></span><span style="flex:1"></span>
+        <input id="evFilter" type="search" placeholder="Find by subject or sender…" style="width:240px" hidden><button id="evLabeledBtn">Show</button></div>
+      <div id="evLabeled" style="margin-top:8px"></div>
+    </section>
 
     <section class="card" style="margin-top:16px">
       <div class="row"><strong>Results</strong><span style="flex:1"></span>
@@ -391,7 +398,7 @@ async function api(path, opts = {}) {
 
 async function load() {
   [apps, stats, milestones] = await Promise.all([api("/api/applications"), api("/api/stats"), api("/api/milestones").catch(() => [])]);
-  $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") + (stats.follow_up ? ` · ${stats.follow_up} to follow up` : "") + (stats.contacts_due ? ` · ${stats.contacts_due} contact${stats.contacts_due > 1 ? "s" : ""} to follow up` : "") + (stats.contacts_to_sort ? ` · ${stats.contacts_to_sort} to sort` : "") : "Nothing tracked yet";
+  $("#subtitle").textContent = stats.total ? `${stats.total} applications tracked` + (stats.actions_open ? ` · ${stats.actions_open} need your input` : "") + (stats.needs_review ? ` · ${stats.needs_review} to review` : "") + (stats.follow_up ? ` · ${stats.follow_up} to follow up` : "") + (stats.contacts_due ? ` · ${stats.contacts_due} contact${stats.contacts_due > 1 ? "s" : ""} to follow up` : "") + (stats.contacts_to_sort ? ` · ${stats.contacts_to_sort} to sort` : "") : "Nothing tracked yet";
   $("#tabAppsCount").textContent = stats.follow_up || "";
   $("#tabContactsCount").textContent = (stats.contacts_due || 0) + (stats.contacts_to_sort || 0) || "";
   renderChips(); renderRows(); renderComingUp();
@@ -401,10 +408,11 @@ function renderChips() {
   const by = stats.by_status || {};
   const chips = [["all", "All", stats.total || 0, "var(--muted)"],
     ...STATUSES.filter(s => by[s]).map(s => [s, s, by[s], `var(--${s})`])];
+  if (stats.actions_open) chips.push(["action", "Action needed", stats.actions_open, "var(--warn)"]);
   if (stats.follow_up) chips.push(["follow", "Follow up", stats.follow_up, "var(--Interview)"]);
   if (stats.needs_review) chips.push(["review", "Needs review", stats.needs_review, "var(--warn)"]);
   $("#chips").innerHTML = chips.map(([k, label, n, c]) =>
-    `<button class="chip ${k === "review" ? "warn" : k === "follow" ? "due" : ""}" data-f="${k}" aria-pressed="${filter === k}">
+    `<button class="chip ${k === "review" || k === "action" ? "warn" : k === "follow" ? "due" : ""}" data-f="${k}" aria-pressed="${filter === k}">
        <span class="dot" style="background:${c}"></span>${esc(label)} <b>${n}</b></button>`).join("") +
     (stats.total ? `<span class="muted rate">${Math.round(stats.response_rate * 100)}% response rate</span>` : "");
 }
@@ -412,7 +420,7 @@ function renderChips() {
 function visible() {
   const q = $("#q").value.trim().toLowerCase(), t = $("#typeFilter").value;
   const list = apps.filter(a =>
-    (filter === "all" || (filter === "review" ? a.needs_review : filter === "follow" ? a.follow_up_due : a.status === filter)) &&
+    (filter === "all" || (filter === "review" ? a.needs_review : filter === "follow" ? a.follow_up_due : filter === "action" ? a.action_open : a.status === filter)) &&
     (!t || a.job_type === t) &&
     (!q || (a.company + " " + a.role).toLowerCase().includes(q)));
   if (filter === "Saved") list.sort((a, b) => (a.deadline || "9999").localeCompare(b.deadline || "9999"));   // soonest deadline first
@@ -432,7 +440,7 @@ function renderRows() {
   $("#empty").hidden = apps.length > 0;
   $("#rows").innerHTML = list.map(a => `
     <tr class="app ${a.id === openId ? "open" : ""}" data-id="${a.id}">
-      <td class="company">${esc(a.company)}${a.needs_review ? '<span class="badge warn">review</span>' : ""}${a.contact_type ? `<span class="badge contact" title="${esc(a.contact_name || a.contact_type)}">${esc(a.contact_type.toLowerCase())}</span>` : ""}${a.follow_up_due ? `<span class="badge due" title="${esc(a.follow_up_reason)}">follow up</span>` : ""}${deadlineBadge(a)}${a.next_milestone ? `<span class="badge ${a.next_milestone.days <= 1 ? "late" : "due"}">${esc(a.next_milestone.kind)} · ${esc(a.next_milestone.when)}</span>` : ""}</td>
+      <td class="company">${esc(a.company)}${a.action_open ? `<span class="badge warn" title="${esc(a.action_note)}">action needed</span>` : ""}${a.needs_review ? '<span class="badge warn">review</span>' : ""}${a.contact_type ? `<span class="badge contact" title="${esc(a.contact_name || a.contact_type)}">${esc(a.contact_type.toLowerCase())}</span>` : ""}${a.follow_up_due ? `<span class="badge due" title="${esc(a.follow_up_reason)}">follow up</span>` : ""}${deadlineBadge(a)}${a.next_milestone ? `<span class="badge ${a.next_milestone.days <= 1 ? "late" : "due"}">${esc(a.next_milestone.kind)} · ${esc(a.next_milestone.when)}</span>` : ""}</td>
       <td class="role">${esc(a.role) || DASH}</td>
       <td>${a.job_type ? `<span class="type-tag">${esc(a.job_type)}</span>` : DASH}</td>
       <td><select class="status" aria-label="Status" data-id="${a.id}" style="--c:var(--${a.status})">
@@ -449,7 +457,9 @@ async function loadDetail(id) {
   if (!a || !el) return;
   const ev = await api(`/api/applications/${id}/events`);
   el.innerHTML = `<div class="detail-grid">
-    <div>${milestoneBlock(a)}<h4 style="margin-top:18px">Email timeline</h4>
+    <div>${a.action_open ? `<div style="background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:10px 12px;margin-bottom:14px">
+        <b>Action needed</b> <span style="opacity:.8">since ${fmt(a.action_at)}</span><div style="margin:4px 0 6px">${esc(a.action_note)}</div>
+        <button data-act="action-done">Mark done</button></div>` : ""}${milestoneBlock(a)}<h4 style="margin-top:18px">Email timeline</h4>
       <ul class="timeline">${ev.length ? ev.map(e => `<li style="--c:var(--${STATUSES.includes(e.type) ? e.type : "Saved"})">
         <b>${esc(e.type)}</b> <span class="muted">· ${fmt(e.received_at)}</span>
         <div class="subj">${esc(e.subject)}</div>
@@ -470,6 +480,7 @@ async function loadDetail(id) {
       ${a.follow_up_due ? `<div class="sync-note" style="margin-top:10px"><b>${esc(a.follow_up_reason)}.</b></div>` : ""}
       <div class="actions">
         ${a.status === "Saved" ? '<button class="primary" data-act="applied">Mark applied</button>' : ""}
+        ${a.action_open ? "" : '<button data-act="flag-action" title="Flag that this company is waiting on something from you">Needs my action</button>'}
         ${a.follow_up_due || a.contact_type || a.follow_up_at ? '<button data-act="followed">Followed up</button><button data-act="snooze">Snooze 1 week</button>' : ""}
         ${a.needs_review ? '<button data-act="reviewed">Mark reviewed</button>' : ""}
         <span class="spacer"></span>
@@ -520,6 +531,11 @@ $("#rows").addEventListener("click", async e => {
     if (role === null) return;
     const r = await api(`/api/applications/${id}/split`, { method: "POST", body: JSON.stringify({ event_ids: [+b.dataset.event], role }) });
     openId = r.new_id; await load();
+  }
+  if (b.dataset.act === "action-done") { await api(`/api/applications/${id}/action-done`, { method: "POST" }); await load(); }
+  if (b.dataset.act === "flag-action") {
+    const note = prompt("What do they need from you? (a form, documents, verification…)"); if (note === null) return;
+    await api(`/api/applications/${id}/action`, { method: "POST", body: JSON.stringify({ note }) }); await load();
   }
   if (b.dataset.act === "applied") { await api(`/api/applications/${id}`, { method: "PATCH", body: JSON.stringify({ status: "Applied" }) }); await load(); }
   if (b.dataset.act === "followed") { await api(`/api/applications/${id}/followed-up`, { method: "POST" }); await load(); }
@@ -898,7 +914,7 @@ async function openOutreachFor(id) {
 loadResume();
 
 // ---------------------------------------------------------------- evaluation
-const ESTATUS = ["Applied", "OA", "Interview", "Offer", "Rejected", "Other"];
+const ESTATUS = [["Applied", "Applied"], ["OA", "OA"], ["Interview", "Interview"], ["Offer", "Offer"], ["Rejected", "Rejected"], ["Action", "Action needed"], ["Other", "Other"]];
 let evItem = null, evAfter = 0, evPoll = null;
 
 async function evalSummary() {
@@ -907,7 +923,7 @@ async function evalSummary() {
   const j = s.job, el = $("#evalJob");
   el.className = j.error ? "err" : "muted";
   el.innerHTML = j.error ? esc(j.error) : j.running ? `${esc(j.phase)} ${j.done}/${j.total}` : "";
-  $("#evalSampleBtn").disabled = $("#evalPredictBtn").disabled = !!j.running;
+  $("#evalSampleBtn").disabled = $("#evalPredictBtn").disabled = $("#evalRedoBtn").disabled = !!j.running;
   if (j.running) { clearTimeout(evPoll); evPoll = setTimeout(() => { evalSummary(); if (!evItem) evalNext(); }, 2500); }
   return s;
 }
@@ -916,8 +932,9 @@ function evalRender(item, sum) {
   const box = $("#evalCard");
   box.hidden = false;
   if (!item) { box.innerHTML = '<div class="muted">Nothing left to label right now. Sample more, or wait for predictions to finish.</div>'; return; }
-  const p = item.pred, isJob = p.is_job;
+  const p = item.truth || item.pred, isJob = p.is_job, editing = !!item.truth;
   box.innerHTML = `
+    ${editing ? '<div class="pill maybe" style="display:inline-block;margin-bottom:8px">Editing a saved label</div>' : ""}
     <div class="row"><span class="pill ${item.kind === "matched" ? "yes" : "maybe"}">${item.kind === "matched" ? "search found it" : "search did NOT find it"}</span>
       <span class="muted">${esc(item.received_at)} · ${esc(item.sender)}</span></div>
     <h3 style="margin:8px 0 8px;font-size:16px">${esc(item.subject) || "(no subject)"}</h3>
@@ -926,10 +943,10 @@ function evalRender(item, sum) {
       <label class="field">Application email?<select id="evJob"><option value="1" ${isJob ? "selected" : ""}>Yes</option><option value="0" ${isJob ? "" : "selected"}>No</option></select></label>
       <label class="field">Company<input id="evCompany" value="${esc(p.company || "")}" style="width:170px"></label>
       <label class="field">Role<input id="evRole" value="${esc(p.role || "")}" style="width:220px"></label>
-      <label class="field">Status<select id="evStatus">${ESTATUS.map(x => `<option ${x === (p.status || "Other") ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      <label class="field">Status<select id="evStatus">${ESTATUS.map(([v, l]) => `<option value="${v}" ${v === (p.status || "Other") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     </div>
-    <div class="row" style="margin-top:12px"><button class="primary" data-ev="ok" title="Shortcut: Y">Save (matches the email)</button>
-      <button data-ev="skip" title="Shortcut: S">Skip</button><span class="muted" style="font-size:12px">Edit any field above, then Save. “Other” = job-related but no clear outcome.</span></div>`;
+    <div class="row" style="margin-top:12px"><button class="primary" data-ev="ok" title="Shortcut: Y">${editing ? "Save changes" : "Save (matches the email)"}</button>
+      <button data-ev="skip" title="Shortcut: S">${editing ? "Cancel" : "Skip"}</button><span class="muted" style="font-size:12px">Edit any field above, then Save. “Action needed” = they ask you for a form, documents or verification. “Other” = job-related but no clear outcome.</span></div>`;
   const toggle = () => { const j = $("#evJob").value === "1"; ["#evCompany", "#evRole", "#evStatus"].forEach(q => $(q).disabled = !j); };
   $("#evJob").onchange = toggle; toggle();
 }
@@ -941,11 +958,11 @@ async function evalNext(after = evAfter) {
 
 $("#evalCard").addEventListener("click", async e => {
   const b = e.target.closest("[data-ev]"); if (!b || !evItem) return;
-  if (b.dataset.ev === "skip") { evAfter = evItem.id; await evalNext(evAfter); return; }
+  if (b.dataset.ev === "skip") { if (evItem.truth) { evAfter = 0; await evalNext(0); return; } evAfter = evItem.id; await evalNext(evAfter); return; }
   const isJob = $("#evJob").value === "1";
   await api(`/api/eval/${evItem.id}/label`, { method: "POST", body: JSON.stringify({
     is_job: isJob, company: isJob ? $("#evCompany").value : "", role: isJob ? $("#evRole").value : "", status: isJob ? $("#evStatus").value : null }) });
-  evAfter = 0; await evalSummary(); await evalNext(0);
+  evAfter = 0; await evalSummary(); await evalNext(0); if (!$("#evFilter").hidden) evalLabeled();
 });
 document.addEventListener("keydown", e => {
   if ($("#evalView").hidden || e.target.closest("input, textarea, select") || !evItem) return;
@@ -959,6 +976,37 @@ $("#evalSampleBtn").onclick = async () => {
   evalSummary();
 };
 $("#evalPredictBtn").onclick = async () => { await api("/api/eval/predict", { method: "POST" }); evalSummary(); };
+$("#evalRedoBtn").onclick = async () => {
+  if (!confirm("Re-run the current parser on all sampled emails? Your labels are kept; only the predictions are replaced. This uses LLM calls and takes a while.")) return;
+  await api("/api/eval/predict", { method: "POST", body: JSON.stringify({ redo: true }) }); evalSummary();
+};
+
+async function evalLabeled() {
+  const list = await api("/api/eval/labeled").catch(() => []), q = $("#evFilter").value.trim().toLowerCase();
+  $("#evLabeledCount").textContent = `${list.length} saved`;
+  const shown = list.filter(i => !q || `${i.subject} ${i.sender}`.toLowerCase().includes(q));
+  $("#evLabeled").innerHTML = shown.length ? `<table class="metrics" style="width:100%"><tbody>${shown.map(i => `<tr>
+      <td style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(i.subject)}">${esc(i.subject) || "(no subject)"}</td>
+      <td class="muted">${i.truth.is_job ? esc([i.truth.status, i.truth.company].filter(Boolean).join(" · ")) : "not an application email"}</td>
+      <td>${i.corrected ? '<span class="pill maybe">you corrected</span>' : ""}</td>
+      <td style="text-align:right;white-space:nowrap"><button class="link" data-evl="edit" data-id="${i.id}">Edit</button>
+        <button class="link danger" data-evl="un" data-id="${i.id}" title="Put it back in the to-label queue">Unlabel</button></td></tr>`).join("")}</tbody></table>`
+    : '<div class="muted" style="font-size:13px">Nothing matches.</div>';
+}
+$("#evLabeledBtn").onclick = () => {
+  const open = $("#evFilter").hidden;
+  $("#evFilter").hidden = !open; $("#evLabeledBtn").textContent = open ? "Hide" : "Show";
+  if (open) evalLabeled(); else $("#evLabeled").innerHTML = "";
+};
+$("#evFilter").addEventListener("input", evalLabeled);
+$("#evLabeled").addEventListener("click", async e => {
+  const b = e.target.closest("[data-evl]"); if (!b) return;
+  if (b.dataset.evl === "edit") {
+    const r = await api(`/api/eval/item/${b.dataset.id}`); evItem = r.item; evalRender(r.item); $("#evalCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  } else if (confirm("Put this email back in the to-label queue?")) {
+    await api(`/api/eval/${b.dataset.id}/unlabel`, { method: "POST" }); await evalSummary(); await evalLabeled(); if (!evItem || evItem.id === +b.dataset.id) await evalNext(0);
+  }
+});
 
 const pctCI = r => (!r || r.value == null) ? "n/a" : `${Math.round(r.value * 100)}% <span class="muted">(${r.k}/${r.n}; ${Math.round(r.ci[0] * 100)}–${Math.round(r.ci[1] * 100)}%)</span>`;
 const pc = x => x == null ? "n/a" : Math.round(x * 100) + "%";
@@ -993,7 +1041,7 @@ $("#evalWriteBtn").onclick = async () => {
 };
 
 // ---------------------------------------------------------------- milestones (deadlines + interviews)
-const MKINDS = ["OA due", "Interview", "Call", "Other"];
+const MKINDS = ["OA due", "Action due", "Interview", "Call", "Other"];
 const msLine = m => `<div class="row" style="padding:4px 0">
     <span class="badge ${m.days <= 1 ? "late" : "due"}" style="margin-left:0">${esc(m.kind)}</span>
     <span title="${m.tz_note ? "The email said " + esc(m.tz_note) + "; shown in your timezone" : ""}"><b>${esc(m.when)}</b>${m.note ? ` <span class="muted">· ${esc(m.note)}</span>` : ""}</span>
@@ -1011,16 +1059,25 @@ function milestoneBlock(a) {
 }
 
 function renderComingUp() {
-  const el = $("#comingUp"), next = milestones.filter(m => m.days <= 14).slice(0, 6);
-  if (!next.length) { el.hidden = true; return; }
+  const el = $("#comingUp"), next = milestones.filter(m => m.days <= 14).slice(0, 6), todo = apps.filter(a => a.action_open);
+  if (!next.length && !todo.length) { el.hidden = true; return; }
   el.hidden = false;
-  el.innerHTML = `<div class="row"><strong>Coming up</strong><span class="muted" style="font-size:13px">${next.length} in the next two weeks</span><span style="flex:1"></span>
+  el.innerHTML = `<div class="row"><strong>${todo.length ? "Needs your attention" : "Coming up"}</strong>
+      <span class="muted" style="font-size:13px">${[todo.length ? `${todo.length} need your input` : "", next.length ? `${next.length} dated in the next two weeks` : ""].filter(Boolean).join(" · ")}</span><span style="flex:1"></span>
       <button class="link" data-ms="rescan" title="Look for dates in recent OA / interview emails">Scan recent emails</button></div>
+    ${todo.map(a => `<div class="row" style="padding:5px 0">
+      <span class="badge warn" style="margin-left:0;min-width:64px;text-align:center">Action</span><b>${esc(a.company)}</b><span class="muted">${esc(a.role)}</span>
+      <span class="muted" style="flex:1;min-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(a.action_note)}">${esc(a.action_note)}</span>
+      <button class="link" data-act-strip="${a.id}">Done</button></div>`).join("")}
     ${next.map(m => `<div class="row" style="padding:5px 0">
       <span class="badge ${m.days <= 1 ? "late" : "due"}" style="margin-left:0;min-width:64px;text-align:center">${esc(m.kind)}</span>
       <b>${esc(m.company)}</b><span class="muted">${esc(m.role)}</span><span style="flex:1"></span><span>${esc(m.when)}</span>
       <a href="/api/milestones/${m.id}.ics">Calendar</a><button class="link" data-ms="done" data-mid="${m.id}">Done</button></div>`).join("")}`;
 }
+$("#comingUp").addEventListener("click", async e => {
+  const b = e.target.closest("[data-act-strip]"); if (!b) return;
+  await api(`/api/applications/${b.dataset.actStrip}/action-done`, { method: "POST" }); await load();
+});
 
 document.addEventListener("click", async e => {
   const b = e.target.closest("[data-ms]"); if (!b) return;
