@@ -1,4 +1,5 @@
 """HTTP endpoints for the evaluation set (sampling, labeling, metrics)."""
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -36,13 +37,26 @@ def sample(body: SampleRequest):
     except gmail.AuthRequired as e:
         raise HTTPException(401, str(e))
     since = body.since or (date.today() - timedelta(days=120))
-    if not evalset.start_sample(since, max(10, min(body.n_matched, 400)), max(0, min(body.n_unmatched, 200))):
+    if not evalset.start_sample(since, max(0, min(body.n_matched, 400)), max(0, min(body.n_unmatched, 400))):
         return {"started": False, "reason": "already running"}
     return {"started": True}
 
 
 class PredictRequest(BaseModel):
     redo: bool = False        # re-run the pipeline on every sampled email (after improving the parser), replacing old predictions
+
+
+@router.post("/scan")
+def scan():
+    """Read subject + sender of every email the search did not match; queue the plausible ones for labeling."""
+    try:
+        gmail.authorize()
+    except gmail.AuthRequired as e:
+        raise HTTPException(401, str(e))
+    with db.session() as conn:             # same window as the original sample, so matched and unmatched counts cover the same dates
+        u = conn.execute("SELECT value FROM meta WHERE key='eval_universe'").fetchone()
+    since = date.fromisoformat(json.loads(u[0])["since"]) if u and json.loads(u[0]).get("since") else date.today() - timedelta(days=120)
+    return {"started": evalset.start_scan(since)}
 
 
 @router.post("/predict")

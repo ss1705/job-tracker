@@ -93,7 +93,7 @@ in an ordinary receipt doesn't trigger it. You can also flag any application you
 The **Evaluate** tab samples real emails from your mailbox (some the search finds, some it doesn't), shows the parser's prediction, and
 lets you confirm or correct it. **Compute metrics** then reports detection precision/recall, status/company/role accuracy with 95%
 confidence intervals, per-class results and a confusion matrix, rules-only vs rules + LLM, and an estimate of how many real application
-emails the Gmail search misses. **Write report files** saves `docs/EVAL.md` (numbers only, safe to commit) and a private error list.
+emails the Gmail search misses. **Scan for missed emails** reads the subject and sender of every email the search did not match and queues the plausible ones, so the search-recall figure rests on an exhaustive check of the suspects plus a random sample of the rest. **Write report files** saves `docs/EVAL.md` (numbers only, safe to commit) and a private error list.
 
 ## Daily digest
 

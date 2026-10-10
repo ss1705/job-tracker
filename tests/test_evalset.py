@@ -105,3 +105,39 @@ def test_relabel_edit_and_unlabel(client):
     assert c.post(f"/api/eval/{first['id']}/unlabel").json()["labeled"] == 0
     assert c.get("/api/eval/next").json()["item"]["id"] == first["id"]                             # back in the queue
     assert c.post("/api/eval/9999/unlabel").status_code == 404 and c.get("/api/eval/item/9999").status_code == 404
+
+
+def test_hot_predicate_and_stratified_report(client):
+    c, db, evalset = client
+    assert evalset.is_hot("Application update", "Acme <no-reply@us.greenhouse-mail.io>")          # recruiting system
+    assert evalset.is_hot("Next steps for your candidacy", "Jo <jo@startup.io>")                  # job words in the subject
+    assert not evalset.is_hot("50% off everything", "Shop <deals@shop.com>")
+    assert not evalset.is_hot("Jobs you might like", "LinkedIn <jobs-listings@linkedin.com>")      # job boards are blocklisted noise
+
+    with db.session() as conn:
+        rows = [("matched", "Thank you for applying to Acme!", "Acme <no-reply@us.greenhouse-mail.io>", "Thanks for applying to the SWE role at Acme.")] * 5
+        rows += [("unmatched", "50% off", "Shop <deals@shop.com>", "sale")] * 4
+        rows += [("unmatched_hot", "Re: next steps for your application", "Hiring <people@startup.io>", "We would like to schedule a call."),
+                 ("unmatched_hot", "Career fair reminder", "Events <hi@school.edu>", "Join us")]
+        for n, (kind, subj, snd, body) in enumerate(rows):
+            conn.execute("INSERT INTO eval_items (gmail_id, kind, subject, sender, body) VALUES (?,?,?,?,?)", (f"s{n}", kind, subj, snd, body))
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('eval_universe', ?)",
+                     (json.dumps({"matched": 50, "unmatched": 400, "n_hot": 2, "n_cold": 398}),))
+    evalset._predict_pending()
+    s = c.get("/api/eval/summary").json()
+    assert s["hot_total"] == 2 and s["hot_labeled"] == 0
+
+    while True:
+        item = c.get("/api/eval/next").json()["item"]
+        if not item:
+            break
+        job = item["subject"].startswith(("Thank you for applying", "Re: next steps"))
+        c.post(f"/api/eval/{item['id']}/label", json=dict(is_job=job, company="Acme" if "Acme" in item["subject"] else "Startup", status="Applied" if job else None))
+    r = c.get("/api/eval/report").json()["search"]
+    assert r["stratified"] and r["hot"]["exact"] and r["hot"]["job"] == 1                          # one real email hiding among the 2 suspects
+    assert r["cold"]["labeled"] == 4 and r["cold"]["job"] == 0 and r["estimated_missed"] == 1
+
+    from jobtracker import evalset as es
+    with db.session() as conn:
+        md = es.markdown(es.report(conn))
+    assert "I read the subject and sender of **all 400**" in md and "every suspect was checked" in md and "Shop" not in md

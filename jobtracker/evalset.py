@@ -49,6 +49,55 @@ def _blocked(conn) -> tuple:
     return tuple(r[0] for r in conn.execute("SELECT pattern FROM blocked_senders"))
 
 
+def is_hot(subject: str, sender: str) -> bool:
+    """Could this unmatched email plausibly be application mail? Judged from sender and subject alone (cheap, recall-oriented):
+    a recruiting-system sender or job words in the subject. Job boards and other known noise don't count."""
+    from .parser import _JOB_SIGNAL, is_ats, is_blocked
+    if is_blocked(sender, subject):
+        return False
+    return is_ats(sender) or bool(_JOB_SIGNAL.search(subject))
+
+
+def start_scan(since: date) -> bool:
+    """Read the subject + sender of EVERY email the search did not match, and queue the plausible ones for labeling."""
+    if not _lock.acquire(blocking=False):
+        return False
+    state.update(running=True, phase="Listing unmatched mail…", done=0, total=0, error="")
+    threading.Thread(target=_run_scan, args=(since,), daemon=True).start()
+    return True
+
+
+def _run_scan(since):
+    try:
+        svc = gmail.service()
+        _, qu = queries(since)
+        u_ids = _ids(svc, qu)
+        state.update(phase="Reading subjects and senders…", total=len(u_ids), done=0)
+        heads = gmail.fetch_headers(svc, u_ids, on_progress=lambda n: state.update(done=n))
+        hot = [i for i in u_ids if i in heads and is_hot(heads[i]["subject"], heads[i]["sender"])]
+        with db.session() as conn:
+            have = {r[0] for r in conn.execute("SELECT gmail_id FROM eval_items")}
+            u = conn.execute("SELECT value FROM meta WHERE key='eval_universe'").fetchone()
+            uni = json.loads(u[0]) if u else {}
+            uni.update(unmatched=len(u_ids), n_hot=len(hot), n_cold=len(u_ids) - len(hot), since=uni.get("since") or since.isoformat(),
+                       scan_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), headers_read=len(heads))
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('eval_universe', ?)", (json.dumps(uni),))
+        todo = [i for i in hot if i not in have]
+        state.update(phase="Downloading suspects…", total=len(todo), done=0)
+        for gid in todo:
+            msg = gmail.fetch_message(svc, gid)
+            with db.session() as conn:
+                conn.execute("INSERT OR IGNORE INTO eval_items (gmail_id, kind, subject, sender, received_at, body) VALUES (?,?,?,?,?,?)",
+                             (gid, "unmatched_hot", msg["subject"][:300], msg["sender"][:200], msg["received_at"], clean_body(msg["body"], MAX_BODY)))
+            state["done"] += 1
+        _predict_pending()
+    except Exception as e:
+        state["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        state.update(running=False, phase="Done" if not state["error"] else state["phase"])
+        _lock.release()
+
+
 # ---------------------------------------------------------------- sampling + predictions (background)
 
 def start_sample(since: date, n_matched: int = 120, n_unmatched: int = 60, seed: int = 7) -> bool:
@@ -173,6 +222,7 @@ def summary(conn) -> dict:
     return {"total": c("1=1"), "predicted": c("pred_json<>''"), "labeled": c("truth_json<>''"),
             "matched_labeled": c("kind='matched' AND truth_json<>''"), "unmatched_labeled": c("kind='unmatched' AND truth_json<>''"),
             "matched_total": c("kind='matched'"), "unmatched_total": c("kind='unmatched'"),
+            "hot_total": c("kind='unmatched_hot'"), "hot_labeled": c("kind='unmatched_hot' AND truth_json<>''"),
             "universe": json.loads(u[0]) if u else None, "job": dict(state)}
 
 
@@ -200,6 +250,12 @@ def report(conn) -> dict:
     u = conn.execute("SELECT value FROM meta WHERE key='eval_universe'").fetchone()
     universe = json.loads(u[0]) if u else {"matched": len(matched), "unmatched": len(unmatched)}
     full = evalmetrics.full_report(matched, unmatched, universe["matched"], universe["unmatched"])
+    if universe.get("n_hot") is not None:         # a full scan of the unmatched mail was done: use the two-strata estimate
+        pool = unmatched + _labeled(conn, "unmatched_hot")
+        hot = [i for i in pool if is_hot(i["subject"], i["sender"])]
+        cold = [i for i in unmatched if not is_hot(i["subject"], i["sender"])]
+        full["search"] = evalmetrics.search_recall_stratified(matched, cold, hot, universe["matched"], universe["n_hot"], universe["n_cold"])
+        full["n_unmatched_labeled"] = len(unmatched) + len(_labeled(conn, "unmatched_hot"))
     # ablation: the same emails through the rules alone (no LLM), to show what the LLM adds
     extra = _blocked(conn)
     rules_items = [{"truth": i["truth"], "pred": _predict(i["subject"], i["sender"], i["body"], use_llm=False, extra_blocked=extra)} for i in matched]
@@ -244,13 +300,27 @@ def markdown(rep: dict) -> str:
     for t, row in s["confusion"].items():
         L.append(f"| {t} | " + " | ".join(str(row.get(c, 0)) for c in s["columns"]) + " |")
     ci = srch.get("recall_ci")
-    L += ["", "## Does the Gmail search find them? (search recall)", "",
-          f"Of {srch['unmatched_universe']} emails the search did *not* match in the same period, a random sample of "
-          f"{srch['unmatched_sample']['n']} contained {srch['unmatched_sample']['k']} real application emails "
-          f"({_pct(srch['unmatched_sample'])}). Point estimate: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed** "
-          f"(search recall **{_f(srch['recall'])}**). Because the sample is small, the honest range is "
-          f"**{_f(ci[0]) if ci else 'n/a'} to {_f(ci[1]) if ci else 'n/a'}**, i.e. up to about {srch['missed_upper_bound']} application emails could be "
-          "hiding in the unmatched mail; a larger or targeted sample is needed to narrow this.", "",
+    rng = f"{_f(ci[0]) if ci else 'n/a'} to {_f(ci[1]) if ci else 'n/a'}"
+    if srch.get("stratified"):
+        h, c = srch["hot"], srch["cold"]
+        search_text = [
+            f"I read the subject and sender of **all {srch['unmatched_universe']}** emails the search did not match and flagged **{h['universe']}** as plausible "
+            f"application mail (recruiting-system senders or job words in the subject). Of those, {h['labeled']} were labeled by hand and "
+            f"**{h['job']} were real application emails**" + (" (every suspect was checked, so this count is exact)." if h["exact"] else " (the rest are estimated)."),
+            f"The other {c['universe']} look unrelated; a random sample of {c['labeled']} of them contained {c['job']} real application emails ({_pct(c['rate'])}).",
+            f"Estimate: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed**, search recall **{_f(srch['recall'])}** "
+            f"(95% range **{rng}**; at most about {srch['missed_upper_bound']} missed)."]
+    else:
+        search_text = [
+            f"Of {srch['unmatched_universe']} emails the search did *not* match in the same period, a random sample of "
+            f"{srch['unmatched_sample']['n']} contained {srch['unmatched_sample']['k']} real application emails ({_pct(srch['unmatched_sample'])}). "
+            f"Point estimate: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed** (search recall **{_f(srch['recall'])}**). "
+            f"Because the sample is small, the honest range is **{rng}**, i.e. up to about {srch['missed_upper_bound']} application emails could be "
+            "hiding in the unmatched mail; a larger or targeted sample is needed to narrow this."]
+    L += ["", "## Does the Gmail search find them? (search recall)", ""]
+    for para in search_text:
+        L += [para, ""]
+    L += [
           "## In real use", "",
           f"- {w['applications_from_email']} applications were created automatically from {w['emails_processed']} emails processed "
           f"({w['emails_ignored']} ignored as not application mail).",

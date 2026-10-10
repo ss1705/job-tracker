@@ -112,3 +112,37 @@ def full_report(matched: list[dict], unmatched: list[dict], n_matched_universe: 
     return {"n_matched_labeled": len(matched), "n_unmatched_labeled": len(unmatched),
             "detection": detection(matched), "extraction": extraction(matched), "status": status_breakdown(matched),
             "search": search_recall(matched, unmatched, n_matched_universe, n_unmatched_universe)}
+
+
+def search_recall_stratified(matched_items: list[dict], cold_items: list[dict], hot_items: list[dict], n_matched_universe: int,
+                             n_hot_universe: int, n_cold_universe: int) -> dict:
+    """Search recall using two strata of the unmatched mail:
+      hot  = looks job-related from sender/subject alone (recruiting-system senders, job words): every one is meant to be labeled,
+             so its count of real application emails is exact when fully labeled (otherwise a sample estimate with an interval);
+      cold = everything else: a random sample, which gives a rate with a confidence interval.
+    recall = found / (found + hidden), with an honest interval from the pessimistic and optimistic pairings."""
+    pm_k = sum(1 for i in matched_items if i["truth"]["is_job"])
+    pm_lo, pm_hi = wilson(pm_k, len(matched_items))
+    pm = pm_k / len(matched_items) if matched_items else 0
+    found, found_lo, found_hi = pm * n_matched_universe, pm_lo * n_matched_universe, pm_hi * n_matched_universe
+
+    hk = sum(1 for i in hot_items if i["truth"]["is_job"])
+    if n_hot_universe and len(hot_items) >= n_hot_universe:                  # every suspect labeled: exact
+        hot_est = hot_lo = hot_hi = float(hk)
+    elif hot_items:
+        lo, hi = wilson(hk, len(hot_items))
+        hot_est, hot_lo, hot_hi = hk / len(hot_items) * n_hot_universe, lo * n_hot_universe, hi * n_hot_universe
+    else:
+        hot_est = hot_lo = hot_hi = 0.0
+    ck = sum(1 for i in cold_items if i["truth"]["is_job"])
+    clo, chi = wilson(ck, len(cold_items))
+    cold_est = (ck / len(cold_items) * n_cold_universe) if cold_items else 0.0
+    cold_lo, cold_hi = clo * n_cold_universe, chi * n_cold_universe
+
+    ratio = lambda f, h: (f / (f + h)) if (f + h) else None
+    return {"estimated_found": round(found), "estimated_missed": round(hot_est + cold_est), "missed_upper_bound": round(hot_hi + cold_hi),
+            "recall": ratio(found, hot_est + cold_est), "recall_ci": [round(ratio(found_lo, hot_hi + cold_hi) or 0, 3), round(ratio(found_hi, hot_lo + cold_lo) or 1, 3)],
+            "hot": {"universe": n_hot_universe, "labeled": len(hot_items), "job": hk, "exact": bool(n_hot_universe and len(hot_items) >= n_hot_universe)},
+            "cold": {"universe": n_cold_universe, "labeled": len(cold_items), "job": ck, "rate": _rate(ck, len(cold_items))},
+            "unmatched_sample": _rate(ck, len(cold_items)), "matched_universe": n_matched_universe, "unmatched_universe": n_hot_universe + n_cold_universe,
+            "stratified": True}

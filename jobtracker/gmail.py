@@ -98,6 +98,35 @@ def build_query(since: date, until: date | None = None) -> str:
     return q
 
 
+def fetch_headers(svc, ids: list[str], chunk: int = 20, on_progress=None) -> dict[str, dict]:
+    """Subject + sender for many messages using batched requests (about 20x fewer round trips than one by one)."""
+    out: dict[str, dict] = {}
+    pending = list(ids)
+    for _round in range(4):
+        failed: list[str] = []
+
+        def cb(request_id, resp, exc):
+            if exc is not None or not resp:
+                failed.append(request_id)
+                return
+            h = {x["name"].lower(): x["value"] for x in resp["payload"].get("headers", [])}
+            out[resp["id"]] = {"subject": h.get("subject", ""), "sender": h.get("from", "")}
+
+        for i in range(0, len(pending), chunk):
+            batch = svc.new_batch_http_request(callback=cb)
+            for mid in pending[i:i + chunk]:
+                batch.add(svc.users().messages().get(userId="me", id=mid, format="metadata", metadataHeaders=["Subject", "From"]), request_id=mid)
+            batch.execute()
+            time.sleep(0.6)                                  # stay under Gmail's per-user quota units per second
+            if on_progress:
+                on_progress(len(out))
+        if not failed:
+            break
+        pending = failed
+        time.sleep(20)                                       # rate-limited ones: wait out the window, then retry just those
+    return out
+
+
 def list_linkedin_ids(svc, since: date, until: date | None = None) -> list[str]:
     """LinkedIn notifications about responses to your outreach. They arrive under Social/Updates, which the
     main application search excludes, so they get their own query."""
