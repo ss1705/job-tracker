@@ -5,6 +5,7 @@ that arrive through `tailscale serve` look like they come from localhost, so sou
 """
 import hashlib
 import hmac
+import ipaddress
 import secrets
 import time
 from urllib.parse import urlparse
@@ -16,9 +17,14 @@ from . import config
 
 COOKIE = "jt_session"
 MAX_AGE = 30 * 24 * 3600
-MAX_FAILS, WINDOW, LOCKOUT = 5, 300, 300
-_fails: list[float] = []
-_locked_until = 0.0
+# sign-in throttling. Behind `tailscale serve` every request comes from 127.0.0.1, so the real device address is read from the
+# X-Forwarded-For header the proxy sets. A client could lie about it, so a higher GLOBAL cap stays as the brute-force backstop.
+PER_SOURCE = (5, 300, 300)        # failures, window seconds, lockout seconds: one device can't lock out the others
+GLOBAL = (30, 600, 600)
+_fails: dict[str, list[float]] = {}
+_locked: dict[str, float] = {}
+_g_fails: list[float] = []
+_g_locked = 0.0
 
 
 def _key() -> bytes:
@@ -30,9 +36,23 @@ def _key() -> bytes:
     return path.read_text().strip().encode()
 
 
+def rotate_key():
+    """New random signing key: every existing session cookie stops working ("sign out everywhere")."""
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.DATA_DIR / "session.key"
+    path.write_text(secrets.token_hex(32))
+    path.chmod(0o600)
+
+
+def _sig(exp: str) -> str:
+    """Signature over the expiry AND a fingerprint of the password, so changing APP_PASSWORD also ends every session."""
+    fingerprint = hashlib.sha256(config.APP_PASSWORD.encode()).hexdigest()[:16]
+    return hmac.new(_key(), f"{exp}:{fingerprint}".encode(), hashlib.sha256).hexdigest()
+
+
 def make_token() -> str:
     exp = str(int(time.time()) + MAX_AGE)
-    return f"{exp}.{hmac.new(_key(), exp.encode(), hashlib.sha256).hexdigest()}"
+    return f"{exp}.{_sig(exp)}"
 
 
 def valid_token(token: str | None) -> bool:
@@ -41,30 +61,58 @@ def valid_token(token: str | None) -> bool:
     exp, sig = token.split(".", 1)
     if not exp.isdigit() or int(exp) < time.time():
         return False
-    return hmac.compare_digest(sig, hmac.new(_key(), exp.encode(), hashlib.sha256).hexdigest())
+    return hmac.compare_digest(sig, _sig(exp))
 
 
 def password_ok(candidate: str) -> bool:
     return hmac.compare_digest(hashlib.sha256(candidate.encode()).digest(), hashlib.sha256(config.APP_PASSWORD.encode()).digest())
 
 
-def lockout_remaining() -> int:
-    return max(0, int(_locked_until - time.time()))
+def source_key(request: Request) -> str:
+    """Which device is this? The proxy's X-Forwarded-For if it is a valid address, else the connection address."""
+    first = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    try:
+        ipaddress.ip_address(first)
+        return first
+    except ValueError:
+        return request.client.host if request.client else "unknown"
 
 
-def record_failure():
-    global _locked_until
+def lockout_remaining(key: str = "") -> int:
     now = time.time()
-    _fails[:] = [t for t in _fails if now - t < WINDOW] + [now]
-    if len(_fails) >= MAX_FAILS:
-        _locked_until = now + LOCKOUT
-        _fails.clear()
+    return max(0, int(max(_locked.get(key, 0.0), _g_locked) - now))
+
+
+def record_failure(key: str = ""):
+    global _g_locked
+    now = time.time()
+    per_n, per_w, per_l = PER_SOURCE
+    mine = [t for t in _fails.get(key, []) if now - t < per_w] + [now]
+    if len(mine) >= per_n:
+        _locked[key], mine = now + per_l, []
+    _fails[key] = mine
+    if len(_fails) > 500:                                   # don't let a flood of made-up addresses grow memory without bound
+        for k in [k for k, v in _fails.items() if not v][:250]:
+            _fails.pop(k, None)
+    g_n, g_w, g_l = GLOBAL
+    _g_fails[:] = [t for t in _g_fails if now - t < g_w] + [now]
+    if len(_g_fails) >= g_n:
+        _g_locked = now + g_l
+        _g_fails.clear()
+
+
+def clear_key(key: str):
+    """A successful sign-in clears that device's counters (the global backstop is deliberately left alone)."""
+    _fails.pop(key, None)
+    _locked.pop(key, None)
 
 
 def reset_throttle():
-    global _locked_until
+    global _g_locked
     _fails.clear()
-    _locked_until = 0.0
+    _locked.clear()
+    _g_fails.clear()
+    _g_locked = 0.0
 
 
 def _secure(request: Request) -> bool:

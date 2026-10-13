@@ -387,16 +387,26 @@ class LoginBody(BaseModel):
 def login(body: LoginBody, request: Request):
     if not config.APP_PASSWORD:
         return JSONResponse({"ok": True})
-    wait = auth.lockout_remaining()
+    key = auth.source_key(request)
+    wait = auth.lockout_remaining(key)
     if wait:
         raise HTTPException(429, f"Too many wrong attempts. Try again in {wait // 60 + 1} minute(s).")
     if not auth.password_ok(body.password):
-        auth.record_failure()
+        auth.record_failure(key)
         time.sleep(0.6)                       # slows guessing without needing any state
         raise HTTPException(401, "Wrong password")
-    auth.reset_throttle()
+    auth.clear_key(key)
     resp = JSONResponse({"ok": True})
     auth.set_cookie(resp, request)
+    return resp
+
+
+@app.post("/logout-all")
+def logout_all():
+    """Lost phone? Rotates the signing key, so every device (including this one) must sign in again."""
+    auth.rotate_key()
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE)
     return resp
 
 

@@ -186,6 +186,7 @@
     <div class="row">
       <a href="/api/export.csv">Export CSV</a>
       <button id="signOutBtn" class="link" hidden>Sign out</button>
+      <button id="signOutAllBtn" class="link" hidden title="Ends every session on every device, e.g. after losing a phone">Sign out everywhere</button>
       <button class="primary" id="addBtn">+ Add application</button>
       <button id="importBtn" hidden>Import…</button>
       <button class="primary" id="addContactBtn" hidden>+ Add contact</button>
@@ -1122,6 +1123,10 @@ document.addEventListener("click", async e => {
 });
 
 // tabs
+$("#signOutAllBtn").onclick = async () => {
+  if (!confirm("Sign out on EVERY device, including this one? Use this if a phone or computer is lost. You'll sign in again with your password.")) return;
+  await fetch("/logout-all", { method: "POST" }); location.href = "/login";
+};
 $("#signOutBtn").onclick = async () => { await fetch("/logout", { method: "POST" }); location.href = "/login"; };
 let evalEnabled = false;      // the Evaluate tab only exists when ENABLE_EVAL=1 on the server
 function setTab(tab) {
@@ -1135,7 +1140,7 @@ function setTab(tab) {
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
 const wantedTab = new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps";
 setTab(wantedTab);
-api("/api/features").then(f => { evalEnabled = !!f.eval; $("#evalTabBtn").hidden = !evalEnabled; $("#signOutBtn").hidden = !f.auth; if (evalEnabled && wantedTab === "eval") setTab("eval"); }).catch(() => {});
+api("/api/features").then(f => { evalEnabled = !!f.eval; $("#evalTabBtn").hidden = !evalEnabled; $("#signOutBtn").hidden = $("#signOutAllBtn").hidden = !f.auth; if (evalEnabled && wantedTab === "eval") setTab("eval"); }).catch(() => {});
 if (new URLSearchParams(location.hash.slice(1)).get("import")) $("#importBtn").click();
 if (new URLSearchParams(location.hash.slice(1)).get("odraft")) openOutreachFor(+new URLSearchParams(location.hash.slice(1)).get("odraft"));
 
