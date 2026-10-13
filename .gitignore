@@ -14,3 +14,4 @@ __pycache__/
 
 # personal exports and contact lists
 *.csv
+.claude/
