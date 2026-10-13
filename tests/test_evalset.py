@@ -153,7 +153,7 @@ def test_evaluation_tools_do_not_exist_unless_enabled(tmp_path, monkeypatch):
     for m in (config, db, followups, sync, scheduler, contacts, drafts_api, evalmetrics, evalset, eval_api, api):
         importlib.reload(m)
     with TestClient(api.app) as c:
-        assert c.get("/api/features").json() == {"eval": False}
+        assert c.get("/api/features").json()["eval"] is False
         for method, path in (("get", "/api/eval/summary"), ("get", "/api/eval/next"), ("get", "/api/eval/report"), ("post", "/api/eval/sample"),
                              ("post", "/api/eval/scan"), ("post", "/api/eval/predict"), ("delete", "/api/eval/data"), ("get", "/api/eval/labeled")):
             r = getattr(c, method)(path)
@@ -163,7 +163,7 @@ def test_evaluation_tools_do_not_exist_unless_enabled(tmp_path, monkeypatch):
 
 def test_delete_evaluation_data_removes_everything(client):
     c, db, evalset = client
-    assert c.get("/api/features").json() == {"eval": True}
+    assert c.get("/api/features").json()["eval"] is True
     seed(db, evalset)
     with db.session() as conn:
         conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('eval_universe', ?)", (json.dumps({"matched": 40, "unmatched": 200}),))

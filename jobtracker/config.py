@@ -45,3 +45,6 @@ LINKEDIN_NOTE_MAX = int(os.getenv("LINKEDIN_NOTE_MAX", "200"))      # connection
 # developer tool: the Evaluate tab samples emails from your mailbox and stores up to 4,000 characters of each in data/ so you can
 # hand-label them and measure accuracy. Off by default; nothing about it is reachable unless you turn it on.
 ENABLE_EVAL = os.getenv("ENABLE_EVAL", "0") in ("1", "true", "True", "yes")
+
+# optional password for the whole web app (strongly recommended before exposing it beyond this Mac, e.g. over Tailscale)
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")

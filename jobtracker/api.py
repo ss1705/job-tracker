@@ -1,16 +1,17 @@
 import csv
 import io
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, contacts, db, digest, drafts_api, eval_api, followups, gmail, importers, milestones, milestones_api, parser, scheduler, sync
+from . import auth, config, contacts, db, digest, drafts_api, eval_api, followups, gmail, importers, milestones, milestones_api, parser, scheduler, sync
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -25,6 +26,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Job Tracker", lifespan=lifespan)
+app.middleware("http")(auth.middleware)
 app.include_router(contacts.router)
 app.include_router(drafts_api.router)
 app.include_router(eval_api.router)
@@ -370,9 +372,44 @@ def digest_send_test():
     return r
 
 
+@app.get("/login")
+def login_form(request: Request):
+    if not config.APP_PASSWORD or auth.valid_token(request.cookies.get(auth.COOKIE)):
+        return RedirectResponse("/", status_code=303)
+    return auth.login_page()
+
+
+class LoginBody(BaseModel):
+    password: str = ""
+
+
+@app.post("/login")
+def login(body: LoginBody, request: Request):
+    if not config.APP_PASSWORD:
+        return JSONResponse({"ok": True})
+    wait = auth.lockout_remaining()
+    if wait:
+        raise HTTPException(429, f"Too many wrong attempts. Try again in {wait // 60 + 1} minute(s).")
+    if not auth.password_ok(body.password):
+        auth.record_failure()
+        time.sleep(0.6)                       # slows guessing without needing any state
+        raise HTTPException(401, "Wrong password")
+    auth.reset_throttle()
+    resp = JSONResponse({"ok": True})
+    auth.set_cookie(resp, request)
+    return resp
+
+
+@app.post("/logout")
+def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE)
+    return resp
+
+
 @app.get("/api/features")
 def features():
-    return {"eval": config.ENABLE_EVAL}
+    return {"eval": config.ENABLE_EVAL, "auth": bool(config.APP_PASSWORD)}
 
 
 @app.get("/api/export.csv")
