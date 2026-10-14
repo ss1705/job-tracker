@@ -185,31 +185,31 @@ def test_quote_check_tolerates_entities_curly_quotes_and_dashes(env, monkeypatch
 
 def test_every_outcome_is_reported_not_silent(env, monkeypatch):
     c, db, m, sync = env
-    text = "Please complete the assessment within 7 days."
-    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": None, "within_days": 7, "quote": "complete the assessment within 7 days"}]})
-    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "found"
+    vague = "The deadline for the assessment is the end of the month."            # no 'within N days' phrase: only the model can read it
+    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": "2026-10-30", "tz": "", "quote": "The deadline for the assessment is the end of the month"}]})
+    assert m.extract_detailed("Test", vague, RECEIVED)["outcome"] == "found"
     _stub_llm(monkeypatch, m, {"items": []})
-    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "no_dates_found"
+    assert m.extract_detailed("Test", vague, RECEIVED)["outcome"] == "no_dates_found"
     _stub_llm(monkeypatch, m, None)                                                              # model returned nothing usable
-    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "llm_failed"
+    assert m.extract_detailed("Test", vague, RECEIVED)["outcome"] == "llm_failed"
 
     def exhausted(*a, **k):
         raise m.llm.LLMExhausted("quota")
     _stub_llm(monkeypatch, m, exhausted)
-    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "llm_failed"
+    assert m.extract_detailed("Test", vague, RECEIVED)["outcome"] == "llm_failed"
     monkeypatch.setattr(m.llm, "chat_json", lambda *a, **k: pytest.fail("no date wording: the model should not be called"))
     assert m.extract_detailed("Hello", "Thanks for your interest in our company.", RECEIVED)["outcome"] == "no_date_wording"
     monkeypatch.setattr(m.llm, "available", lambda: False)
-    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "no_llm"
-    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": "2020-01-01", "tz": "", "quote": "complete the assessment within 7 days"}]})
+    assert m.extract_detailed("Test", vague, RECEIVED)["outcome"] == "no_llm"
+    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": "2020-01-01", "tz": "", "quote": "The deadline for the assessment is the end of the month"}]})
     monkeypatch.setattr(m.llm, "available", lambda: True)
-    assert "out of range" in m.extract_detailed("Test", text, RECEIVED)["detail"]                # a past date is refused with a reason
+    assert "out of range" in m.extract_detailed("Test", vague, RECEIVED)["detail"]               # a past date is refused with a reason
 
 
 def test_failed_scans_are_recorded_explained_in_the_api_and_retried(env, monkeypatch):
     c, db, m, sync = env
     from jobtracker.parser import Parsed
-    msg = {"id": "mx1", "subject": "Your assessment", "sender": "Maven <no-reply@maven.com>", "body": "Please complete the test within 7 days.",
+    msg = {"id": "mx1", "subject": "Your assessment", "sender": "Maven <no-reply@maven.com>", "body": "The deadline for this test is the end of the month.",
            "received_at": RECEIVED}
     landed = {}
     with db.session() as conn:
@@ -224,7 +224,7 @@ def test_failed_scans_are_recorded_explained_in_the_api_and_retried(env, monkeyp
     assert a["milestone_scan"]["outcome"] == "llm_failed" and a["next_milestone"] is None       # the UI can say WHY there is no date
 
     # the model is back: the next sync's retry pass finds the deadline without anyone clicking anything
-    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": None, "within_days": 7, "quote": "complete the test within 7 days"}]})
+    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": "2026-10-30", "tz": "", "quote": "The deadline for this test is the end of the month"}]})
     monkeypatch.setattr(sync.gmail, "fetch_message", lambda svc, gid: msg)
     assert sync.retry_failed_scans(object()) == 1
     a = c.get("/api/applications").json()[0]
@@ -232,3 +232,52 @@ def test_failed_scans_are_recorded_explained_in_the_api_and_retried(env, monkeyp
     with db.session() as conn:
         assert conn.execute("SELECT outcome FROM milestone_scans WHERE gmail_id='mx1'").fetchone()[0] == "found"
     assert sync.retry_failed_scans(object()) == 0                                                # nothing left to retry
+
+
+# ---------------------------------------------------------------- the plain rule for "within N days" and the fuller-text choice
+
+@pytest.mark.parametrize("line, due, kind", [
+    ("Please note that this test must be completed within 7 days of receiving this email.", "2026-10-13", "OA due"),
+    ("Kindly complete the test within seven (7) days.", "2026-10-13", "OA due"),
+    ("You have 7 days to complete the assessment.", "2026-10-13", "OA due"),
+    ("The test link is valid for 7 days.", "2026-10-13", "OA due"),
+    ("Please submit the requested documents within 2 weeks.", "2026-10-20", "Action due"),
+    ("Please complete the coding challenge within 3 business days.", "2026-10-09", "OA due"),       # received Tue Oct 6 -> Fri Oct 9
+])
+def test_rule_finds_relative_deadlines_without_any_model(env, monkeypatch, line, due, kind):
+    c, db, m, sync = env
+    monkeypatch.setattr(m.llm, "available", lambda: False)                                        # no model at all
+    monkeypatch.setattr(m.llm, "chat_json", lambda *a, **k: pytest.fail("the rule alone should find this"))
+    res = m.extract_detailed("Your assessment", f"Dear Candidate, welcome. {line} Good luck.", RECEIVED)
+    assert res["outcome"] == "found" and "rule" in res["detail"]
+    assert (res["items"][0]["due_at"], res["items"][0]["kind"]) == (due, kind)
+    assert line.split(".")[0][:20] in res["items"][0]["quote"] or "7" in res["items"][0]["quote"] or "2 weeks" in res["items"][0]["quote"]
+
+
+def test_rule_ignores_sentences_that_are_not_your_deadline(env, monkeypatch):
+    c, db, m, sync = env
+    monkeypatch.setattr(m.llm, "available", lambda: False)
+    for line in ("We will get back to you within 7 days.", "You will hear from us within 5 business days.",
+                 "Our team will review your results within 3 days.", "Your account was created 7 days ago.",
+                 "Applications received in the last 7 days are being reviewed."):
+        assert m.rule_deadlines(f"Hello. {line}", RECEIVED) == [], line
+
+
+def test_hours_deadline_and_merging_with_the_models_answer(env, monkeypatch):
+    c, db, m, sync = env
+    out = m.rule_deadlines("This link is valid for 48 hours. Please finish the test before then.", RECEIVED)
+    assert out[0]["due_at"] == "2026-10-08T11:00"                                                 # 11:00 AM local on Oct 6 + 48 hours
+    # model and rule agree on the same date: one item, not two
+    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": None, "within_days": 7, "quote": "must be completed within 7 days"}]})
+    res = m.extract_detailed("Test", "This assessment must be completed within 7 days.", RECEIVED)
+    assert len(res["items"]) == 1 and "model + rule" in res["detail"]
+
+
+def test_the_fuller_of_plain_and_html_text_is_used(env, monkeypatch):
+    c, db, m, sync = env
+    monkeypatch.setattr(m.llm, "available", lambda: False)
+    footer_only = "You received this email because you applied. Manage your email preferences or unsubscribe at any time."
+    real_message = footer_only + " Please complete the assessment within 7 days of receiving this email. " + "Good luck with it. " * 8
+    assert m.extract_detailed("Your test", footer_only, RECEIVED)["items"] == []                  # plain part alone: the sentence is missing
+    res = m.extract_detailed("Your test", footer_only, RECEIVED, html_text=real_message)
+    assert res["outcome"] == "found" and res["items"][0]["due_at"] == "2026-10-13"

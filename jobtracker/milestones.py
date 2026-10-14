@@ -21,7 +21,8 @@ _ZONES = {"PT": "America/Los_Angeles", "PST": "America/Los_Angeles", "PDT": "Ame
 
 _HAS_DATE_HINT = re.compile(
     r"\b(\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?|jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|"
-    r"nov(ember)?|dec(ember)?|\d+\s*(business\s+)?(hour|day|week)s?|deadline|expires?|expiry|valid\s+(until|through|for)|due|no later than|"
+    r"nov(ember)?|dec(ember)?|(\d+|\(\d+\)|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fourteen|fifteen|twenty|thirty)\s*(business\s+)?(hour|day|week)s?|"
+    r"deadline|expires?|expiry|valid\s+(until|through|for)|due|no later than|"
     r"(mon|tues|wednes|thurs|fri|satur|sun)day|tomorrow|today|tonight|next week)\b", re.I)
 
 
@@ -76,16 +77,77 @@ RULES
 Return ONLY JSON: {{"items": [{{"kind": "...", "when": "...", "tz": "...", "within_days": null, "within_hours": null, "quote": "..."}}]}}"""
 
 
-def extract(subject: str, body: str, received_utc: str) -> list[dict]:
+_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+          "twelve": 12, "fourteen": 14, "fifteen": 15, "twenty": 20, "thirty": 30}
+_REL = re.compile(r"\b(?:within|in|for|have|has|up to|over)\s+(?:the\s+next\s+)?(?P<n>\d{1,3}|" + "|".join(_WORDS) + r")\s*(?:\(\d{1,3}\)\s*)?"
+                  r"(?P<biz>business\s+|working\s+)?(?P<unit>hour|day|week)s?\b", re.I)
+_USER_ACTION = re.compile(r"complet|finish|submit|take the|attempt|respond|reply|return|upload|valid|expire|must be done|available for", re.I)
+_NOT_A_DEADLINE = re.compile(r"get back to you|contact you|hear from|be in touch|notify you|review your|let you know|results? (will|within)|"
+                             r"we will (respond|reply|review)|\bago\b|last \d|past \d|previous \d", re.I)
+
+
+def _add_business_days(start: date, n: int) -> date:
+    d = start
+    while n > 0:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n -= 1
+    return d
+
+
+def rule_deadlines(text: str, received_utc: str) -> list[dict]:
+    """The common case without any model: a sentence that tells YOU to do something within N hours/days/weeks of the email."""
+    received = _local_date_of(received_utc)
+    out = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", html.unescape(text or "")):
+        sentence = " ".join(sentence.split())
+        m = _REL.search(sentence)
+        if not m or not _USER_ACTION.search(sentence) or _NOT_A_DEADLINE.search(sentence) or len(sentence) > 300:
+            continue
+        raw = m.group("n").lower()
+        n = int(raw) if raw.isdigit() else _WORDS[raw]
+        unit = m.group("unit").lower()
+        if unit == "hour":
+            due = (datetime.fromisoformat(received_utc).replace(tzinfo=timezone.utc).astimezone(local_tz())
+                   + timedelta(hours=n)).strftime("%Y-%m-%dT%H:%M")
+        elif m.group("biz") and unit == "day":
+            due = _add_business_days(received, n).isoformat()
+        else:
+            due = (received + timedelta(days=n * (7 if unit == "week" else 1))).isoformat()
+        kind = "OA due" if re.search(r"assessment|test|challenge|coding|hackerrank|codesignal|codility|quiz", sentence, re.I) else \
+               "Action due" if re.search(r"form|document|upload|verif|confirm|information|profile|application|submit", sentence, re.I) else "Other"
+        out.append({"kind": kind, "due_at": due, "quote": sentence[:300], "tz_note": ""})
+    return out
+
+
+def extract(subject: str, body: str, received_utc: str, html_text: str = "") -> list[dict]:
     """Verified milestones from one email: [{kind, due_at, quote, tz_note}]. Never raises on LLM trouble."""
-    return extract_detailed(subject, body, received_utc)["items"]
+    return extract_detailed(subject, body, received_utc, html_text)["items"]
 
 
-def extract_detailed(subject: str, body: str, received_utc: str) -> dict:
+def extract_detailed(subject: str, body: str, received_utc: str, html_text: str = "") -> dict:
     """Like extract, but says what happened: {items, outcome, detail}. Outcomes:
     found | no_dates_found (the model saw none) | no_date_wording (nothing date-like in the email) |
-    rejected (the model proposed dates that failed verification) | llm_failed (retry later) | no_llm (no API key)."""
+    rejected (the model proposed dates that failed verification) | llm_failed (retry later) | no_llm (no API key).
+    A rule for "within N days" runs first and always counts, so a model outage can't lose that common deadline."""
     body = html.unescape(body or "")
+    html_text = html.unescape(html_text or "")
+    if len(html_text) > 1.3 * len(body):          # some senders' plain-text part is only a footer; the real message is in the HTML
+        body = html_text
+    by_rule = rule_deadlines(f"{subject}\n{body}", received_utc)
+    model = _model_items(subject, body, received_utc)
+    merged, seen = [], set()
+    for it in [*model["items"], *by_rule]:         # the model's richer items first; the rule fills in what it missed
+        if (it["kind"], it["due_at"]) not in seen:
+            seen.add((it["kind"], it["due_at"]))
+            merged.append(it)
+    if merged:
+        how = "model + rule" if model["items"] and by_rule else "model" if model["items"] else "rule"
+        return {"items": merged, "outcome": "found", "detail": f"{len(merged)} found ({how})"}
+    return {"items": [], "outcome": model["outcome"], "detail": model["detail"]}
+
+
+def _model_items(subject: str, body: str, received_utc: str) -> dict:
     if not llm.available():
         return {"items": [], "outcome": "no_llm", "detail": "No GROQ_API_KEY configured"}
     if not _HAS_DATE_HINT.search(f"{subject}\n{body}"):

@@ -132,7 +132,7 @@ def capture_milestones(app_id: int, msg: dict) -> int:
     """Deadlines / interview times from an OA, interview or action email. Optional extra: a failure here never stops a sync.
     Every scan's outcome is recorded, so a missing deadline can be explained in the UI and model failures retried."""
     try:
-        res = milestones.extract_detailed(msg["subject"], msg["body"], msg["received_at"])
+        res = milestones.extract_detailed(msg["subject"], msg["body"], msg["received_at"], msg.get("html_text", ""))
         with db.session() as conn:
             changed = milestones.store(conn, app_id, res["items"], msg["received_at"]) if res["items"] else 0
             conn.execute("INSERT OR REPLACE INTO milestone_scans (gmail_id, application_id, outcome, detail) VALUES (?,?,?,?)",
