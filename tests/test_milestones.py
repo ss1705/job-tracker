@@ -331,3 +331,11 @@ def test_explain_script_reports_decisions_not_email_text_unless_asked(env, monke
     assert any("sentence: Please complete the assessment within 7 days" in l for l in lines)           # only when asked
 
     assert script.main(["nonexistent-company"], fetch=lambda gid: msg, out=lambda *_: None) == 1
+
+
+@pytest.mark.parametrize("text", ["You will have a 7-day window to complete it.", "Please finish within a week.", "Valid for 7 calendar days.",
+                                  "You have 48-hour access.", "Complete it in 3 business days."])
+def test_the_models_gate_recognises_the_same_phrasings_as_the_rule(env, text):
+    c, db, m, sync = env
+    assert m._HAS_DATE_HINT.search(text), text
+    assert not m._HAS_DATE_HINT.search("Thank you for your interest in our graduate programme.")

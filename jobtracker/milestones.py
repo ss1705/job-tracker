@@ -21,7 +21,8 @@ _ZONES = {"PT": "America/Los_Angeles", "PST": "America/Los_Angeles", "PDT": "Ame
 
 _HAS_DATE_HINT = re.compile(
     r"\b(\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?|jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|"
-    r"nov(ember)?|dec(ember)?|(\d+|\(\d+\)|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fourteen|fifteen|twenty|thirty)\s*(business\s+)?(hour|day|week)s?|"
+    r"nov(ember)?|dec(ember)?|(\d+|\(\d+\)|a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fourteen|fifteen|twenty|thirty)[-\s]*"
+    r"((business|working|calendar|consecutive)\s+)?(hour|day|week)s?|"
     r"deadline|expires?|expiry|valid\s+(until|through|for)|due|no later than|"
     r"(mon|tues|wednes|thurs|fri|satur|sun)day|tomorrow|today|tonight|next week)\b", re.I)
 
