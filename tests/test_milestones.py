@@ -160,3 +160,75 @@ def test_action_emails_flag_the_application_until_resolved(env):
     again = next(x for x in c.get("/api/applications").json() if x["company"] == "Acme")
     assert again["action_open"] and again["action_note"] == "Send transcript"
     assert c.post("/api/applications/999/action", json={}).status_code == 404
+
+
+# ---------------------------------------------------------------- scan outcomes, tolerant verification, retry
+
+def _stub_llm(monkeypatch, m, response):
+    monkeypatch.setattr(m.llm, "chat_json", response if callable(response) else (lambda *a, **k: response))
+
+
+def test_quote_check_tolerates_entities_curly_quotes_and_dashes(env, monkeypatch):
+    c, db, m, sync = env
+    body = ("Hi&nbsp;Alex, you’ll have until October&nbsp;12, 2026 – 11:59&nbsp;PM ET to finish the test. "
+            "The link expires after that.")
+    item = {"kind": "OA due", "when": "2026-10-12T23:59", "tz": "ET",
+            "quote": "you'll have until October 12, 2026 - 11:59 PM ET to finish the test"}        # straight quote, plain spaces, hyphen
+    _stub_llm(monkeypatch, m, {"items": [item]})
+    res = m.extract_detailed("Your assessment", body, RECEIVED)
+    assert res["outcome"] == "found" and res["items"][0]["due_at"] == "2026-10-12T20:59"
+    # a quote that is genuinely not in the email is still refused, and the reason is recorded
+    _stub_llm(monkeypatch, m, {"items": [{**item, "quote": "you have until the end of the month to finish the test"}]})
+    res = m.extract_detailed("Your assessment", body, RECEIVED)
+    assert res["items"] == [] and res["outcome"] == "rejected" and "quote not found" in res["detail"]
+
+
+def test_every_outcome_is_reported_not_silent(env, monkeypatch):
+    c, db, m, sync = env
+    text = "Please complete the assessment within 7 days."
+    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": None, "within_days": 7, "quote": "complete the assessment within 7 days"}]})
+    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "found"
+    _stub_llm(monkeypatch, m, {"items": []})
+    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "no_dates_found"
+    _stub_llm(monkeypatch, m, None)                                                              # model returned nothing usable
+    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "llm_failed"
+
+    def exhausted(*a, **k):
+        raise m.llm.LLMExhausted("quota")
+    _stub_llm(monkeypatch, m, exhausted)
+    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "llm_failed"
+    monkeypatch.setattr(m.llm, "chat_json", lambda *a, **k: pytest.fail("no date wording: the model should not be called"))
+    assert m.extract_detailed("Hello", "Thanks for your interest in our company.", RECEIVED)["outcome"] == "no_date_wording"
+    monkeypatch.setattr(m.llm, "available", lambda: False)
+    assert m.extract_detailed("Test", text, RECEIVED)["outcome"] == "no_llm"
+    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": "2020-01-01", "tz": "", "quote": "complete the assessment within 7 days"}]})
+    monkeypatch.setattr(m.llm, "available", lambda: True)
+    assert "out of range" in m.extract_detailed("Test", text, RECEIVED)["detail"]                # a past date is refused with a reason
+
+
+def test_failed_scans_are_recorded_explained_in_the_api_and_retried(env, monkeypatch):
+    c, db, m, sync = env
+    from jobtracker.parser import Parsed
+    msg = {"id": "mx1", "subject": "Your assessment", "sender": "Maven <no-reply@maven.com>", "body": "Please complete the test within 7 days.",
+           "received_at": RECEIVED}
+    landed = {}
+    with db.session() as conn:
+        sync.apply_parsed(conn, msg, Parsed(is_job=True, company="Maven", role="Grad Dev", status="OA"), out=landed)
+    app_id = landed["app_id"]
+
+    _stub_llm(monkeypatch, m, None)                                                              # the model is down during the sync
+    assert sync.capture_milestones(app_id, msg) == 0
+    with db.session() as conn:
+        assert conn.execute("SELECT outcome FROM milestone_scans WHERE gmail_id='mx1'").fetchone()[0] == "llm_failed"
+    a = c.get("/api/applications").json()[0]
+    assert a["milestone_scan"]["outcome"] == "llm_failed" and a["next_milestone"] is None       # the UI can say WHY there is no date
+
+    # the model is back: the next sync's retry pass finds the deadline without anyone clicking anything
+    _stub_llm(monkeypatch, m, {"items": [{"kind": "OA due", "when": None, "within_days": 7, "quote": "complete the test within 7 days"}]})
+    monkeypatch.setattr(sync.gmail, "fetch_message", lambda svc, gid: msg)
+    assert sync.retry_failed_scans(object()) == 1
+    a = c.get("/api/applications").json()[0]
+    assert a["next_milestone"]["kind"] == "OA due" and a["milestone_scan"] is None
+    with db.session() as conn:
+        assert conn.execute("SELECT outcome FROM milestone_scans WHERE gmail_id='mx1'").fetchone()[0] == "found"
+    assert sync.retry_failed_scans(object()) == 0                                                # nothing left to retry

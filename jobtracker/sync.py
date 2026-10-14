@@ -129,16 +129,32 @@ def split_events(conn, app_id: int, event_ids: list[int], role: str = "") -> int
 
 
 def capture_milestones(app_id: int, msg: dict) -> int:
-    """Deadlines / interview times from an OA or interview email. Optional extra: a failure here never stops a sync."""
+    """Deadlines / interview times from an OA, interview or action email. Optional extra: a failure here never stops a sync.
+    Every scan's outcome is recorded, so a missing deadline can be explained in the UI and model failures retried."""
     try:
-        items = milestones.extract(msg["subject"], msg["body"], msg["received_at"])
-        if not items:
-            return 0
+        res = milestones.extract_detailed(msg["subject"], msg["body"], msg["received_at"])
         with db.session() as conn:
-            return milestones.store(conn, app_id, items, msg["received_at"])
+            changed = milestones.store(conn, app_id, res["items"], msg["received_at"]) if res["items"] else 0
+            conn.execute("INSERT OR REPLACE INTO milestone_scans (gmail_id, application_id, outcome, detail) VALUES (?,?,?,?)",
+                         (msg["id"], app_id, res["outcome"], res["detail"]))
+        return changed
     except Exception as e:
         print(f"[milestones] skipped: {type(e).__name__}: {e}")
         return 0
+
+
+def retry_failed_scans(svc, days: int = 14) -> int:
+    """Re-scan recent emails whose date extraction failed because the language model was unavailable."""
+    with db.session() as conn:
+        rows = conn.execute("SELECT gmail_id, application_id FROM milestone_scans WHERE outcome='llm_failed' AND scanned_at >= datetime('now', ?)",
+                            (f"-{days} day",)).fetchall()
+    found = 0
+    for r in rows:
+        try:
+            found += capture_milestones(r["application_id"], gmail.fetch_message(svc, r["gmail_id"]))
+        except Exception as e:
+            print(f"[milestones] retry skipped: {type(e).__name__}: {e}")
+    return found
 
 
 # ---------------------------------------------------------------- orchestration
@@ -177,6 +193,7 @@ def run_sync(since: date, until: date | None = None, reprocess_linkedin: bool = 
         state.running = True
         state.message = "Searching Gmail…"
         svc = gmail.service()
+        retry_failed_scans(svc)
         ids = gmail.list_message_ids(svc, since, until)
         ids += [i for i in gmail.list_linkedin_ids(svc, since, until) if i not in set(ids)]
         with db.session() as conn:

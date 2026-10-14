@@ -3,7 +3,9 @@
 The LLM proposes dates; code verifies them: the quoted sentence must really appear in the email, relative phrases
 ("within 7 days") are computed from the email's own date, and implausible dates are dropped.
 """
+import html
 import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -32,8 +34,11 @@ def _local_date_of(received_utc: str) -> date:
     return dt.astimezone(local_tz()).date()
 
 
-def _norm(text: str) -> str:
-    return re.sub(r"[\s\u00a0]+", " ", re.sub(r"[“”\"']", "", text or "")).strip().lower()
+def _fold(text: str) -> str:
+    """Letters and digits only, after decoding HTML entities and Unicode look-alikes. Used to check that the model's quote
+    really is in the email without tripping on curly quotes, dashes, line breaks or a leftover '&nbsp;'."""
+    s = unicodedata.normalize("NFKC", html.unescape(text or ""))
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
 
 
 def to_local(when: str, tz_abbr: str) -> str | None:
@@ -73,21 +78,38 @@ Return ONLY JSON: {{"items": [{{"kind": "...", "when": "...", "tz": "...", "with
 
 def extract(subject: str, body: str, received_utc: str) -> list[dict]:
     """Verified milestones from one email: [{kind, due_at, quote, tz_note}]. Never raises on LLM trouble."""
-    if not llm.available() or not _HAS_DATE_HINT.search(f"{subject}\n{body}"):
-        return []
+    return extract_detailed(subject, body, received_utc)["items"]
+
+
+def extract_detailed(subject: str, body: str, received_utc: str) -> dict:
+    """Like extract, but says what happened: {items, outcome, detail}. Outcomes:
+    found | no_dates_found (the model saw none) | no_date_wording (nothing date-like in the email) |
+    rejected (the model proposed dates that failed verification) | llm_failed (retry later) | no_llm (no API key)."""
+    body = html.unescape(body or "")
+    if not llm.available():
+        return {"items": [], "outcome": "no_llm", "detail": "No GROQ_API_KEY configured"}
+    if not _HAS_DATE_HINT.search(f"{subject}\n{body}"):
+        return {"items": [], "outcome": "no_date_wording", "detail": "No date or time-limit wording in the email"}
     received = _local_date_of(received_utc)
     try:
-        out = llm.chat_json(_PROMPT.format(received=received.isoformat(), subject=subject, body=(body or "")[:5000]),
+        out = llm.chat_json(_PROMPT.format(received=received.isoformat(), subject=subject, body=body[:5000]),
                             temperature=0, effort="low", label="milestones", max_tokens=2500)
-    except llm.LLMExhausted:
-        return []
-    found, haystack = [], _norm(f"{subject} {body}")
-    for it in (out or {}).get("items") or []:
-        if not isinstance(it, dict) or it.get("kind") not in KINDS:
+    except llm.LLMExhausted as e:
+        return {"items": [], "outcome": "llm_failed", "detail": f"Daily model limit reached ({e})"[:200]}
+    if out is None:
+        return {"items": [], "outcome": "llm_failed", "detail": "The language model did not answer"}
+    proposed = [it for it in (out.get("items") or []) if isinstance(it, dict)]
+    if not proposed:
+        return {"items": [], "outcome": "no_dates_found", "detail": "The email states no deadline or scheduled time"}
+    found, haystack, reasons = [], _fold(f"{subject} {body}"), []
+    for it in proposed:
+        if it.get("kind") not in KINDS:
+            reasons.append("unknown kind")
             continue
         quote = str(it.get("quote") or "")[:300]
-        if len(_norm(quote)) < 6 or _norm(quote) not in haystack:
-            continue                                                    # the model must point at real words in the email
+        if len(_fold(quote)) < 10 or _fold(quote) not in haystack:
+            reasons.append("quote not found in the email")          # the model must point at real words in the email
+            continue
         due = None
         if it.get("within_days"):
             try:
@@ -103,10 +125,12 @@ def extract(subject: str, body: str, received_utc: str) -> list[dict]:
         elif it.get("when"):
             due = to_local(str(it["when"]).strip(), str(it.get("tz") or ""))
         if not due:
+            reasons.append("date could not be read")
             continue
         d = date.fromisoformat(due[:10])
         if d < received - timedelta(days=1) or d > received + timedelta(days=240):
-            continue                                                    # in the past or absurdly far away: don't trust it
+            reasons.append("date out of range")                     # in the past or absurdly far away: don't trust it
+            continue
         tz_note = f"{str(it.get('when') or '')[11:16]} {str(it.get('tz') or '')}".strip() if it.get("when") and "T" in str(it["when"]) else ""
         found.append({"kind": it["kind"], "due_at": due, "quote": quote, "tz_note": tz_note})
     seen, uniq = set(), []
@@ -114,7 +138,9 @@ def extract(subject: str, body: str, received_utc: str) -> list[dict]:
         if (f["kind"], f["due_at"]) not in seen:
             seen.add((f["kind"], f["due_at"]))
             uniq.append(f)
-    return uniq
+    if uniq:
+        return {"items": uniq, "outcome": "found", "detail": f"{len(uniq)} found"}
+    return {"items": [], "outcome": "rejected", "detail": "; ".join(sorted(set(reasons)))[:200] or "nothing usable"}
 
 
 def store(conn, app_id: int, items: list[dict], received_utc: str, source: str = "email") -> int:

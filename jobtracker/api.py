@@ -121,8 +121,14 @@ def list_applications():
         nxt = {}
         for m in milestones.upcoming(conn, today, 365):          # ordered by date: the first one per application is the next
             nxt.setdefault(m["application_id"], m)
+    with db.session() as conn:                   # the latest scan per application, for "why is there no date?" hints
+        scans = {}
+        for r in conn.execute("SELECT application_id, outcome, detail, scanned_at FROM milestone_scans WHERE scanned_at >= datetime('now','-21 day') ORDER BY scanned_at"):
+            scans[r["application_id"]] = {"outcome": r["outcome"], "detail": r["detail"], "at": r["scanned_at"]}
     for a in apps:
         a["action_open"] = bool(a["action_at"]) and not a["action_done"]
+        scan = scans.get(a["id"])
+        a["milestone_scan"] = scan if scan and scan["outcome"] != "found" else None
         m = nxt.get(a["id"])
         a["next_milestone"] = {"id": m["id"], "kind": m["kind"], "days": m["days"], "when": m["when"]} if m else None
         last_local = sync.local_date(a["last_event_at"]) if a["last_event_at"] else None

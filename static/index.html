@@ -211,6 +211,7 @@
       <span id="msg" class="muted"></span>
     </div>
     <div id="lastSync" class="sync-note" style="margin-top:10px"></div>
+    <div class="sync-note"><button class="link" data-ms="rescan" style="margin:0" title="Look for deadlines and interview times in recent OA / interview emails">Scan recent emails for deadlines</button></div>
     <div class="sync-note">Reads application emails in this date range (empty <b>To</b> = up to today). Safe to re-run: emails already seen are skipped.</div>
   </section>
 
@@ -1076,7 +1077,13 @@ const msLine = m => `<div class="row" style="padding:4px 0">
 
 function milestoneBlock(a) {
   const mine = milestones.filter(m => m.application_id === a.id);
-  return `<h4>Coming up</h4>${mine.length ? mine.map(msLine).join("") : '<div class="muted" style="font-size:13px">Nothing scheduled.</div>'}
+  const why = { llm_failed: "The language model was unavailable when the latest email was scanned. It retries on the next sync, or use Scan recent emails.",
+                rejected: "Something in the latest email looked like a date but couldn't be verified against its text. If there is a deadline, add it yourself.",
+                no_dates_found: "The latest email doesn't state a deadline or time.", no_date_wording: "The latest email has no date or time-limit wording.",
+                no_llm: "Date reading needs a GROQ_API_KEY." }[a.milestone_scan && a.milestone_scan.outcome];
+  const hint = !mine.length && a.milestone_scan && why
+    ? `<div class="muted" style="font-size:12px;margin:2px 0 6px" title="${esc(a.milestone_scan.detail)}">No date found: ${esc(why)}</div>` : "";
+  return `<h4>Coming up</h4>${mine.length ? mine.map(msLine).join("") : '<div class="muted" style="font-size:13px">Nothing scheduled.</div>'}${hint}
     <div class="row" style="margin-top:8px" data-appid="${a.id}">
       <select data-msk aria-label="Kind">${MKINDS.map(k => `<option ${k === "Interview" ? "selected" : ""}>${k}</option>`).join("")}</select>
       <input type="date" data-msd aria-label="Date"><input type="time" data-mst aria-label="Time (optional)">

@@ -102,6 +102,15 @@ CREATE TABLE IF NOT EXISTS milestones (
 );
 CREATE INDEX IF NOT EXISTS idx_milestone_app ON milestones(application_id);
 
+-- what happened when an OA / interview / action email was scanned for dates (so a missed deadline is explainable and retryable)
+CREATE TABLE IF NOT EXISTS milestone_scans (
+    gmail_id TEXT PRIMARY KEY,
+    application_id INTEGER,
+    outcome TEXT NOT NULL,      -- found | no_dates_found | no_date_wording | rejected | llm_failed | no_llm
+    detail TEXT NOT NULL DEFAULT '',
+    scanned_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- evaluation set: real emails sampled from your mailbox, with the pipeline's prediction and YOUR label (local only)
 CREATE TABLE IF NOT EXISTS eval_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
