@@ -281,3 +281,53 @@ def test_the_fuller_of_plain_and_html_text_is_used(env, monkeypatch):
     assert m.extract_detailed("Your test", footer_only, RECEIVED)["items"] == []                  # plain part alone: the sentence is missing
     res = m.extract_detailed("Your test", footer_only, RECEIVED, html_text=real_message)
     assert res["outcome"] == "found" and res["items"][0]["due_at"] == "2026-10-13"
+
+
+@pytest.mark.parametrize("line", [
+    "You will have a 7-day window to complete the assessment.",
+    "Please complete the assessment within 7 calendar days.",
+    "The test must be completed within a week.",
+    "You have one week to finish the coding challenge.",
+])
+def test_more_ways_of_saying_seven_days(env, monkeypatch, line):
+    c, db, m, sync = env
+    out = m.rule_deadlines(f"Welcome. {line} Good luck.", RECEIVED)
+    assert out and out[0]["due_at"] == "2026-10-13" and out[0]["kind"] == "OA due", line
+
+
+def test_the_rule_reads_the_html_text_even_when_the_plain_text_is_the_one_chosen(env, monkeypatch):
+    c, db, m, sync = env
+    monkeypatch.setattr(m.llm, "available", lambda: False)
+    plain = "Dear Candidate, thank you for applying. " * 20                                       # long enough that plain would normally win
+    html_only = "Please complete the online assessment within 7 days of receiving this email."    # short: not 1.3x longer than the plain text
+    assert len(html_only) < 1.3 * len(plain)
+    res = m.extract_detailed("Your test", plain, RECEIVED, html_text=html_only)
+    assert res["outcome"] == "found" and res["items"][0]["due_at"] == "2026-10-13"
+
+
+def test_explain_script_reports_decisions_not_email_text_unless_asked(env, monkeypatch):
+    c, db, m, sync = env
+    import importlib.util
+    from pathlib import Path
+    from jobtracker.parser import Parsed
+    msg = {"id": "ex1", "subject": "Your HackerRank test", "sender": "Maven <no-reply@maven.com>", "received_at": RECEIVED,
+           "body": "Dear Candidate. Welcome to the programme. Please complete the assessment within 7 days of receiving this email.",
+           "html_text": ""}
+    with db.session() as conn:
+        sync.apply_parsed(conn, msg, Parsed(is_job=True, company="Maven Securities", role="Grad Dev", status="OA"))
+    monkeypatch.setattr(m.llm, "available", lambda: False)
+    spec = importlib.util.spec_from_file_location("explain_milestones", Path(__file__).resolve().parent.parent / "scripts" / "explain_milestones.py")
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+
+    lines = []
+    assert script.main(["maven"], fetch=lambda gid: msg, out=lines.append) == 0
+    text = "\n".join(lines)
+    assert "plain rule found: [('OA due', '2026-10-13')]" in text and "time-limit wording present: yes" in text
+    assert "Welcome to the programme" not in text and "Please complete the assessment" not in text     # no email text by default
+
+    lines.clear()
+    script.main(["maven", "--show-text"], fetch=lambda gid: msg, out=lines.append)
+    assert any("sentence: Please complete the assessment within 7 days" in l for l in lines)           # only when asked
+
+    assert script.main(["nonexistent-company"], fetch=lambda gid: msg, out=lambda *_: None) == 1

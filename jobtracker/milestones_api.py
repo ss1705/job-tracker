@@ -107,7 +107,7 @@ def _rescan(days: int):
         with db.session() as conn:
             rows = conn.execute(
                 """SELECT e.gmail_id, e.application_id FROM events e
-                   WHERE e.type IN ('OA','Interview') AND e.gmail_id IS NOT NULL AND e.received_at >= datetime('now', ?) ORDER BY e.received_at""",
+                   WHERE e.type IN ('OA','Interview','Action') AND e.gmail_id IS NOT NULL AND e.received_at >= datetime('now', ?) ORDER BY e.received_at""",
                 (f"-{days} day",)).fetchall()
         scan["total"] = len(rows)
         svc = gmail.service()

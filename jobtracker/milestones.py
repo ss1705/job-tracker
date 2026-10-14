@@ -77,10 +77,10 @@ RULES
 Return ONLY JSON: {{"items": [{{"kind": "...", "when": "...", "tz": "...", "within_days": null, "within_hours": null, "quote": "..."}}]}}"""
 
 
-_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
           "twelve": 12, "fourteen": 14, "fifteen": 15, "twenty": 20, "thirty": 30}
-_REL = re.compile(r"\b(?:within|in|for|have|has|up to|over)\s+(?:the\s+next\s+)?(?P<n>\d{1,3}|" + "|".join(_WORDS) + r")\s*(?:\(\d{1,3}\)\s*)?"
-                  r"(?P<biz>business\s+|working\s+)?(?P<unit>hour|day|week)s?\b", re.I)
+_REL = re.compile(r"\b(?:within|in|for|have|has|up to|over)\s+(?:the\s+next\s+|a\s+total\s+of\s+|an?\s+)?(?P<n>\d{1,3}|" + "|".join(_WORDS) + r")[-\s]*"
+                  r"(?:\(\d{1,3}\)[-\s]*)?(?P<biz>(?:business|working)\s+)?(?:calendar\s+|consecutive\s+)?(?P<unit>hour|day|week)s?\b", re.I)
 _USER_ACTION = re.compile(r"complet|finish|submit|take the|attempt|respond|reply|return|upload|valid|expire|must be done|available for", re.I)
 _NOT_A_DEADLINE = re.compile(r"get back to you|contact you|hear from|be in touch|notify you|review your|let you know|results? (will|within)|"
                              r"we will (respond|reply|review)|\bago\b|last \d|past \d|previous \d", re.I)
@@ -132,9 +132,9 @@ def extract_detailed(subject: str, body: str, received_utc: str, html_text: str 
     A rule for "within N days" runs first and always counts, so a model outage can't lose that common deadline."""
     body = html.unescape(body or "")
     html_text = html.unescape(html_text or "")
+    by_rule = rule_deadlines(f"{subject}\n{body}\n{html_text}", received_utc)       # the rule reads both versions of the text
     if len(html_text) > 1.3 * len(body):          # some senders' plain-text part is only a footer; the real message is in the HTML
         body = html_text
-    by_rule = rule_deadlines(f"{subject}\n{body}", received_utc)
     model = _model_items(subject, body, received_utc)
     merged, seen = [], set()
     for it in [*model["items"], *by_rule]:         # the model's richer items first; the rule fills in what it missed
@@ -256,7 +256,7 @@ def ics(m: dict) -> str:
     """A calendar file for one milestone, with reminders a day and two hours before."""
     uid = f"milestone-{m['id']}@jobtracker.local"
     title = f"{m['kind']}: {m['company']}" + (f" ({m['role']})" if m.get("role") else "")
-    esc = lambda t: str(t).replace("\\", "\\\\").replace(";", "\;").replace(",", "\\,").replace("\n", "\\n")
+    esc = lambda t: str(t).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if "T" in m["due_at"]:
         start = datetime.strptime(m["due_at"], "%Y-%m-%dT%H:%M")
