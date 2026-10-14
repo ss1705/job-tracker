@@ -160,6 +160,8 @@ def send_now(test: bool = False) -> dict:
         result.update(sent=True, count=d["count"])
     except gmail.SendPermissionMissing as e:
         result.update(error=str(e), needs_permission=True)
+    except gmail.AuthRequired as e:                      # connection expired/revoked: say so plainly; it retries hourly once reconnected
+        result["error"] = str(e)
     except Exception as e:
         result["error"] = f"{type(e).__name__}: {e}"
     finally:

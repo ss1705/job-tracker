@@ -193,6 +193,11 @@
     </div>
   </header>
 
+  <div id="gmailBanner" class="card" hidden style="background:var(--warn-bg);color:var(--warn);margin-bottom:16px">
+    <div class="row"><div style="flex:1;min-width:240px"><b>Gmail is disconnected</b>, so syncing and the daily digest are paused.
+      <div style="margin-top:4px;font-size:13px">In a terminal, in the project folder, run <code>.venv/bin/python -m jobtracker.gmail</code> and approve in the browser.</div></div>
+      <button id="gmailRecheck">Check again</button></div></div>
+
   <nav class="tabs" role="tablist">
     <button class="tab" role="tab" data-tab="apps" aria-selected="true">Applications <span class="count" id="tabAppsCount"></span></button>
     <button class="tab" role="tab" data-tab="contacts" aria-selected="false">Contacts <span class="count" id="tabContactsCount"></span></button>

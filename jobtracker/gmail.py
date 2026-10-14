@@ -5,6 +5,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -50,6 +51,10 @@ class AuthRequired(Exception):
     pass
 
 
+RECONNECT_MESSAGE = ("Your Gmail connection has expired or was revoked, so syncing and the daily digest are paused. "
+                     "Reconnect it: run `.venv/bin/python -m jobtracker.gmail` in the project folder and approve in the browser.")
+
+
 class SendPermissionMissing(Exception):
     pass
 
@@ -63,7 +68,10 @@ def authorize(interactive: bool = False) -> Credentials:
     if creds and creds.valid:
         return creds
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except RefreshError as e:                      # Google says the saved connection is dead (expired in Testing mode, or revoked)
+            raise AuthRequired(RECONNECT_MESSAGE) from e
     elif interactive:
         flow = InstalledAppFlow.from_client_secrets_file(str(config.GMAIL_CLIENT_FILE), SCOPES)
         creds = flow.run_local_server(port=0)

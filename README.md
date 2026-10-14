@@ -27,6 +27,17 @@ save the JSON as `secrets/gmail_client.json`, then sign in once:
 Pick a date range in the UI and press **Sync**. Re-syncing is safe (messages are tracked by Gmail id).
 Rows the parser wasn't sure about are marked **review**. Editing a status by hand locks it against later auto-updates.
 
+## Troubleshooting: "Gmail is disconnected" / "invalid_grant"
+
+The page shows a red banner (and the sync/digest status lines say so) when Google has ended the saved Gmail connection. The usual
+cause: your Google Cloud OAuth consent screen is in **Testing** mode, where Google expires the connection after about 7 days.
+
+1. **Fix the cause first:** Google Cloud Console → your project → *Google Auth Platform* (or *APIs & Services → OAuth consent screen*) →
+   *Audience* / *Publishing status* → **Publish app** (move from *Testing* to *In production*). For personal use it can stay unverified;
+   Google shows an "unverified app" screen at sign-in (Advanced → Go to the app).
+2. **Then reconnect:** `.venv/bin/python -m jobtracker.gmail` and approve in the browser (connections created *after* publishing don't expire weekly).
+3. Click **Check again** on the banner. The next sync picks up what was missed.
+
 ## Follow-ups and saved postings
 
 - **Saved postings:** add one with status *Saved* and a deadline. It shows "due in 3d" / "overdue" badges and a

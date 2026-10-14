@@ -31,6 +31,14 @@ def _last_sync() -> dict | None:
     return json.loads(row[0]) if row else None
 
 
+def _record_sync_problem(message: str):
+    """Store a failed background sync as the latest sync result, so the UI shows why nothing is updating."""
+    with db.session() as conn:
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_sync', ?)", (json.dumps({
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "since": date.today().isoformat(), "added": 0, "updated": 0,
+            "ignored": 0, "failed": 0, "needs_review": 0, "processed": 0, "total": 0, "error": message}),))
+
+
 def _loop():
     time.sleep(STARTUP_DELAY_SECONDS)
     while True:
@@ -40,8 +48,8 @@ def _loop():
                 since = date.today() - timedelta(days=config.AUTO_SYNC_LOOKBACK_DAYS)
                 print(f"[auto-sync] syncing since {since}")
                 sync.run_sync(since)
-        except gmail.AuthRequired:
-            pass
+        except gmail.AuthRequired as e:
+            _record_sync_problem(str(e))                # shown in red on the page; also backs off instead of retrying every minute
         except Exception as e:
             print(f"[auto-sync] error: {type(e).__name__}: {e}")
         try:

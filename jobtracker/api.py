@@ -423,6 +423,25 @@ def logout():
     return resp
 
 
+_gmail_check = {"at": 0.0, "value": None}
+
+
+@app.get("/api/gmail/status")
+def gmail_status():
+    """Is the Gmail connection alive? Cached for two minutes so the page can poll it without hammering Google."""
+    if _gmail_check["value"] is not None and time.time() - _gmail_check["at"] < 120:
+        return _gmail_check["value"]
+    try:
+        gmail.authorize()
+        value = {"connected": True}
+    except gmail.AuthRequired as e:
+        value = {"connected": False, "message": str(e)}
+    except Exception as e:                      # offline, Google down...: unknown, not "disconnected"
+        value = {"connected": None, "message": f"Couldn't check Gmail ({type(e).__name__})"}
+    _gmail_check.update(at=time.time(), value=value)
+    return value
+
+
 @app.get("/api/features")
 def features():
     return {"eval": config.ENABLE_EVAL, "auth": bool(config.APP_PASSWORD)}
