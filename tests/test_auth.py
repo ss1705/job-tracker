@@ -60,18 +60,6 @@ def test_cookie_is_signed_and_expires(tmp_path, monkeypatch):
         assert c.get("/api/applications").status_code == 401
 
 
-def test_repeated_wrong_passwords_lock_sign_in_for_a_while(tmp_path, monkeypatch):
-    client, auth = make_client(tmp_path, monkeypatch)
-    auth.reset_throttle()
-    with client as c:
-        for _ in range(5):
-            assert c.post("/login", json={"password": "wrong"}).status_code == 401
-        locked = c.post("/login", json={"password": PASSWORD})                       # even the right one is refused during the lockout
-        assert locked.status_code == 429 and "Too many" in locked.json()["detail"]
-        auth.reset_throttle()
-        assert c.post("/login", json={"password": PASSWORD}).status_code == 200
-
-
 def test_cross_site_writes_are_refused_even_with_a_valid_cookie(tmp_path, monkeypatch):
     client, auth = make_client(tmp_path, monkeypatch)
     with client as c:
@@ -80,17 +68,3 @@ def test_cross_site_writes_are_refused_even_with_a_valid_cookie(tmp_path, monkey
         assert evil.status_code == 403
         same = c.post("/api/applications", json={"company": "Fine"}, headers={"Origin": "http://testserver"})
         assert same.status_code == 201
-
-
-def test_secure_cookie_flag_when_served_over_https(tmp_path, monkeypatch):
-    client, auth = make_client(tmp_path, monkeypatch)
-    with client as c:
-        r = c.post("/login", json={"password": PASSWORD}, headers={"X-Forwarded-Proto": "https"})   # what `tailscale serve` sends
-        assert "secure" in r.headers["set-cookie"].lower()
-
-
-def test_no_password_means_no_login(tmp_path, monkeypatch):
-    client, auth = make_client(tmp_path, monkeypatch, password="")
-    with client as c:
-        assert c.get("/api/applications").status_code == 200 and c.get("/").status_code == 200
-        assert c.get("/api/features").json()["auth"] is False

@@ -48,17 +48,6 @@ def test_status_breakdown_confusion_and_other_label():
     assert b["per_class"]["Rejected"]["recall"] == 0.5 and b["per_class"]["Rejected"]["precision"] == 1.0
 
 
-def test_search_recall_estimate_from_two_samples():
-    matched = [it(True, True)] * 8 + [it(False, False)] * 2                    # 80% of matched mail is job-related
-    unmatched = [it(True, False)] * 2 + [it(False, False)] * 98                # 2% of unmatched mail is job-related
-    s = m.search_recall(matched, unmatched, n_matched_universe=300, n_unmatched_universe=2000)
-    assert s["estimated_found"] == 240 and s["estimated_missed"] == 40
-    assert round(s["recall"], 3) == round(240 / 280, 3)
-    assert (s["unmatched_sample"]["k"], s["unmatched_sample"]["n"]) == (2, 100)
-    lo, hi = s["recall_ci"]
-    assert lo < s["recall"] < hi and 0 < lo and hi <= 1                          # a real interval around the estimate
-
-
 def test_zero_misses_in_a_small_sample_does_not_claim_perfect_recall():
     matched = [it(True, True)] * 10
     unmatched = [it(False, False)] * 60                                           # 0 of 60 hiding

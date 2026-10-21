@@ -31,9 +31,11 @@ def _ids(svc, q: str) -> list[str]:
             return ids
 
 
-def queries(since: date) -> tuple[str, str]:
-    matched = gmail.build_query(since)
+def queries(since: date, until: date | None = None) -> tuple[str, str]:
+    matched = gmail.build_query(since, until)
     base = f"after:{(since - timedelta(days=1)):%Y/%m/%d} -from:me -in:spam -in:trash"
+    if until:
+        base += f" before:{(until + timedelta(days=2)):%Y/%m/%d}"
     unmatched = f"{base} -{gmail.matched_core()}"
     return matched, unmatched
 
@@ -209,12 +211,12 @@ def unlabel(conn, item_id: int) -> None:
     conn.execute("UPDATE eval_items SET truth_json='', labeled_at=NULL WHERE id=?", (item_id,))
 
 
-def label(conn, item_id: int, truth: dict) -> None:
+def label(conn, item_id: int, truth: dict, blind: bool = False) -> None:
     status = truth.get("status") if truth.get("is_job") else None
     clean = {"is_job": bool(truth.get("is_job")), "company": (truth.get("company") or "").strip() if truth.get("is_job") else "",
              "role": (truth.get("role") or "").strip() if truth.get("is_job") else "",
              "status": evalmetrics.norm_status(status) if truth.get("is_job") else None}
-    conn.execute("UPDATE eval_items SET truth_json=?, labeled_at=datetime('now') WHERE id=?", (json.dumps(clean), item_id))
+    conn.execute("UPDATE eval_items SET truth_json=?, labeled_at=datetime('now'), blind=? WHERE id=?", (json.dumps(clean), int(blind), item_id))
 
 
 def summary(conn) -> dict:
@@ -229,8 +231,10 @@ def summary(conn) -> dict:
 
 # ---------------------------------------------------------------- metrics
 
-def _labeled(conn, kind: str) -> list[dict]:
-    rows = conn.execute("SELECT * FROM eval_items WHERE kind=? AND truth_json<>'' AND pred_json<>''", (kind,)).fetchall()
+def _labeled(conn, kind: str, splits: tuple = ("tuning",)) -> list[dict]:
+    """Labeled + predicted items of one kind, limited to the given splits (default: only the tuning sample, as before)."""
+    marks = ",".join("?" * len(splits))
+    rows = conn.execute(f"SELECT * FROM eval_items WHERE kind=? AND split IN ({marks}) AND truth_json<>'' AND pred_json<>''", (kind, *splits)).fetchall()
     return [{"id": r["id"], "subject": r["subject"], "sender": r["sender"], "body": r["body"], "truth": json.loads(r["truth_json"]),
              "pred": json.loads(r["pred_json"])} for r in rows]
 
@@ -276,6 +280,49 @@ def _f(x) -> str:
     return "n/a" if x is None else f"{x * 100:.0f}%"
 
 
+def metric_tables(rep: dict, level: str = "##") -> list[str]:
+    """Detection, extraction, per-class and confusion tables for one split's report (used by the held-out report)."""
+    d, e, s, rules = rep["detection"], rep["extraction"], rep["status"], rep["rules_only"]
+    L = [f"{level} Is it an application email? (detection)", "",
+         "| | Precision | Recall | F1 |", "|---|---|---|---|",
+         f"| Rules + LLM | {_f(d['precision'])} | {_f(d['recall'])} | {_f(d['f1'])} |",
+         f"| Rules only | {_f(rules['detection']['precision'])} | {_f(rules['detection']['recall'])} | {_f(rules['detection']['f1'])} |", "",
+         f"{level} What does it extract? (over real application emails; a missed email counts as wrong)", "",
+         "| | Rules + LLM | Rules only |", "|---|---|---|",
+         f"| Status | {_pct(e['status'])} | {_pct(rules['extraction']['status'])} |",
+         f"| Company | {_pct(e['company'])} | {_pct(rules['extraction']['company'])} |",
+         f"| Role | {_pct(e['role'])} | {_pct(rules['extraction']['role'])} |", "",
+         f"Status accuracy once an email is caught: {_pct(e['status_given_caught'])}.", "",
+         f"{level} Status by class (rules + LLM)", "",
+         "| Status | Precision | Recall (95% CI) | F1 | Emails |", "|---|---|---|---|---|"]
+    for c, v in s["per_class"].items():
+        if v["support"] or v["fp"]:
+            ci = v.get("recall_ci")
+            rec = _f(v["recall"]) + (f" ({ci[0] * 100:.0f}–{ci[1] * 100:.0f}%)" if ci else "")
+            L.append(f"| {c} | {_f(v['precision'])} | {rec} | {_f(v['f1'])} | {v['support']} |")
+    if s.get("macro_f1") is not None:
+        L += ["", f"Macro-averaged F1 over the {s['classes_with_examples']} classes that have examples: **{_f(s['macro_f1'])}**. "
+              "Classes with only a few examples have very wide intervals; read them as anecdotes, not measurements."]
+    L += ["", "Confusion matrix (rows = truth, columns = prediction; *Missed* = not detected):", "",
+          "| truth \\ pred | " + " | ".join(s["columns"]) + " |", "|---|" + "---|" * len(s["columns"])]
+    for t, row in s["confusion"].items():
+        L.append(f"| {t} | " + " | ".join(str(row.get(c, 0)) for c in s["columns"]) + " |")
+    return L
+
+
+def search_lines(srch: dict, window: str = "") -> list[str]:
+    """The search-recall paragraph for a stratified estimate (used by the held-out report)."""
+    ci = srch.get("recall_ci")
+    rng = f"{_f(ci[0]) if ci else 'n/a'} to {_f(ci[1]) if ci else 'n/a'}"
+    h, c = srch["hot"], srch["cold"]
+    return [f"I read the subject and sender of **all {srch['unmatched_universe']}** emails the search did not match{window} and flagged **{h['universe']}** "
+            f"as plausible application mail. Of those, {h['labeled']} were labeled by hand and **{h['job']} were real application emails**"
+            + (" (every suspect was checked, so this count is exact)." if h["exact"] else " (the rest are estimated)."), "",
+            f"The other {c['universe']} look unrelated; a random sample of {c['labeled']} of them contained {c['job']} real application emails ({_pct(c['rate'])}).", "",
+            f"Estimate: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed**, search recall **{_f(srch['recall'])}** "
+            f"(95% range **{rng}**; at most about {srch['missed_upper_bound']} missed).", ""]
+
+
 def markdown(rep: dict) -> str:
     d, e, s, rules, w, srch = rep["detection"], rep["extraction"], rep["status"], rep["rules_only"], rep["wild"], rep["search"]
     L = ["# Evaluation", "",
@@ -285,36 +332,12 @@ def markdown(rep: dict) -> str:
          "fresh held-out sample.", "",
          f"Measured on **{rep['n_matched_labeled']} real emails** the sync search matched and **{rep['n_unmatched_labeled']}** it did not, "
          f"hand-labeled by the mailbox owner. Model: `{rep['model']}`. Intervals are 95% Wilson confidence intervals; with samples this "
-         "small, read the interval, not just the point estimate.", "",
-         "## Is it an application email? (detection)", "",
-         "| | Precision | Recall | F1 |", "|---|---|---|---|",
-         f"| Rules + LLM | {_f(d['precision'])} | {_f(d['recall'])} | {_f(d['f1'])} |",
-         f"| Rules only | {_f(rules['detection']['precision'])} | {_f(rules['detection']['recall'])} | {_f(rules['detection']['f1'])} |", "",
-         "## What does it extract? (over real application emails; a missed email counts as wrong)", "",
-         "| | Rules + LLM | Rules only |", "|---|---|---|",
-         f"| Status | {_pct(e['status'])} | {_pct(rules['extraction']['status'])} |",
-         f"| Company | {_pct(e['company'])} | {_pct(rules['extraction']['company'])} |",
-         f"| Role | {_pct(e['role'])} | {_pct(rules['extraction']['role'])} |", "",
-         f"Status accuracy once an email is caught: {_pct(e['status_given_caught'])}.", "",
-         "## Status by class (rules + LLM)", "", "| Status | Precision | Recall | F1 | Emails |", "|---|---|---|---|---|"]
-    for c, v in s["per_class"].items():
-        if v["support"] or v["fp"]:
-            L.append(f"| {c} | {_f(v['precision'])} | {_f(v['recall'])} | {_f(v['f1'])} | {v['support']} |")
-    L += ["", "Confusion matrix (rows = truth, columns = prediction; *Missed* = not detected):", "",
-          "| truth \\ pred | " + " | ".join(s["columns"]) + " |", "|---|" + "---|" * len(s["columns"])]
-    for t, row in s["confusion"].items():
-        L.append(f"| {t} | " + " | ".join(str(row.get(c, 0)) for c in s["columns"]) + " |")
+         "small, read the interval, not just the point estimate.", ""]
+    L += metric_tables(rep)
     ci = srch.get("recall_ci")
     rng = f"{_f(ci[0]) if ci else 'n/a'} to {_f(ci[1]) if ci else 'n/a'}"
     if srch.get("stratified"):
-        h, c = srch["hot"], srch["cold"]
-        search_text = [
-            f"I read the subject and sender of **all {srch['unmatched_universe']}** emails the search did not match and flagged **{h['universe']}** as plausible "
-            f"application mail (recruiting-system senders or job words in the subject). Of those, {h['labeled']} were labeled by hand and "
-            f"**{h['job']} were real application emails**" + (" (every suspect was checked, so this count is exact)." if h["exact"] else " (the rest are estimated)."),
-            f"The other {c['universe']} look unrelated; a random sample of {c['labeled']} of them contained {c['job']} real application emails ({_pct(c['rate'])}).",
-            f"Estimate: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed**, search recall **{_f(srch['recall'])}** "
-            f"(95% range **{rng}**; at most about {srch['missed_upper_bound']} missed)."]
+        search_text = [para for para in search_lines(srch) if para]
     else:
         search_text = [
             f"Of {srch['unmatched_universe']} emails the search did *not* match in the same period, a random sample of "

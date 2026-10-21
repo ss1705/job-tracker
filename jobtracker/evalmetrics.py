@@ -84,8 +84,14 @@ def status_breakdown(items: list[dict]) -> dict:
         tp = matrix[c][c]
         fp = sum(matrix[t][c] for t in STATUS_LABELS if t != c)
         fn = sum(n for p, n in matrix[c].items() if p != c)
-        per_class[c] = {**_prf(tp, fp, fn), "support": sum(matrix[c].values())}
-    return {"per_class": per_class, "confusion": {t: dict(matrix[t]) for t in STATUS_LABELS if matrix[t]}, "columns": STATUS_LABELS + ["Missed"]}
+        support = sum(matrix[c].values())
+        per_class[c] = {**_prf(tp, fp, fn), "support": support,
+                        "recall_ci": [round(x, 3) for x in wilson(tp, tp + fn)] if tp + fn else None,
+                        "precision_ci": [round(x, 3) for x in wilson(tp, tp + fp)] if tp + fp else None}
+    scored = [v["f1"] for v in per_class.values() if v["support"] and v["f1"] is not None]
+    present = [v for v in per_class.values() if v["support"]]
+    macro = (sum((v["f1"] or 0.0) for v in present) / len(present)) if present else None   # classes with no true examples don't count
+    return {"macro_f1": macro, "classes_with_examples": len(present), "per_class": per_class, "confusion": {t: dict(matrix[t]) for t in STATUS_LABELS if matrix[t]}, "columns": STATUS_LABELS + ["Missed"]}
 
 
 def search_recall(matched_items: list[dict], unmatched_items: list[dict], n_matched_universe: int, n_unmatched_universe: int) -> dict:

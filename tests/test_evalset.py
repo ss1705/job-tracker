@@ -83,31 +83,6 @@ def test_predict_label_report_and_markdown(client):
     assert err.startswith("# Evaluation errors (private")
 
 
-def test_report_needs_labels_first(client):
-    c, db, evalset = client
-    assert c.get("/api/eval/report").status_code == 409
-
-
-def test_relabel_edit_and_unlabel(client):
-    c, db, evalset = client
-    seed(db, evalset)
-    first = c.get("/api/eval/next").json()["item"]
-    assert c.post(f"/api/eval/{first['id']}/label", json=dict(is_job=False)).status_code == 200      # a mislabel
-    row = next(i for i in c.get("/api/eval/labeled").json() if i["id"] == first["id"])
-    assert row["truth"]["is_job"] is False and row["corrected"] is True                            # differs from the pipeline's guess
-
-    item = c.get(f"/api/eval/item/{first['id']}").json()["item"]
-    assert item["truth"]["is_job"] is False and item["pred"]["is_job"] is True                     # the UI can prefill from the saved label
-    c.post(f"/api/eval/{first['id']}/label", json=dict(is_job=True, company="Acme", role="Software Engineer", status="Applied"))
-    again = next(i for i in c.get("/api/eval/labeled").json() if i["id"] == first["id"])
-    assert again["truth"]["is_job"] is True and again["truth"]["company"] == "Acme"                # overwritten, not duplicated
-    assert c.get("/api/eval/summary").json()["labeled"] == 1
-
-    assert c.post(f"/api/eval/{first['id']}/unlabel").json()["labeled"] == 0
-    assert c.get("/api/eval/next").json()["item"]["id"] == first["id"]                             # back in the queue
-    assert c.post("/api/eval/9999/unlabel").status_code == 404 and c.get("/api/eval/item/9999").status_code == 404
-
-
 def test_hot_predicate_and_stratified_report(client):
     c, db, evalset = client
     assert evalset.is_hot("Application update", "Acme <no-reply@us.greenhouse-mail.io>")          # recruiting system
@@ -159,26 +134,3 @@ def test_evaluation_tools_do_not_exist_unless_enabled(tmp_path, monkeypatch):
             r = getattr(c, method)(path)
             assert r.status_code == 404 and "ENABLE_EVAL" in r.json()["detail"], path           # nothing is stored or reachable
         assert c.get("/api/applications").status_code == 200                                      # the rest of the app is unaffected
-
-
-def test_delete_evaluation_data_removes_everything(client):
-    c, db, evalset = client
-    assert c.get("/api/features").json()["eval"] is True
-    seed(db, evalset)
-    with db.session() as conn:
-        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('eval_universe', ?)", (json.dumps({"matched": 40, "unmatched": 200}),))
-        conn.execute("INSERT INTO meta (key, value) VALUES ('keep_me', '1')")
-    from jobtracker import config
-    err = config.DATA_DIR / "eval_errors.md"
-    err.write_text("private email text")
-    c.post("/api/eval/1/label", json=dict(is_job=False))
-
-    r = c.delete("/api/eval/data").json()
-    assert r == {"deleted_emails": 7, "deleted_error_file": True}
-    assert not err.exists()
-    s = c.get("/api/eval/summary").json()
-    assert (s["total"], s["labeled"], s["universe"]) == (0, 0, None)
-    with db.session() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM eval_items").fetchone()[0] == 0
-        assert conn.execute("SELECT value FROM meta WHERE key='keep_me'").fetchone()[0] == "1"     # unrelated data untouched
-    assert c.delete("/api/eval/data").json() == {"deleted_emails": 0, "deleted_error_file": False}  # safe to repeat

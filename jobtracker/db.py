@@ -122,7 +122,9 @@ CREATE TABLE IF NOT EXISTS eval_items (
     body TEXT NOT NULL DEFAULT '',
     pred_json TEXT NOT NULL DEFAULT '',       -- {is_job, company, role, status, via} from the full pipeline at sampling time
     truth_json TEXT NOT NULL DEFAULT '',      -- {is_job, company, role, status} confirmed or corrected by you
-    labeled_at TEXT
+    labeled_at TEXT,
+    split TEXT NOT NULL DEFAULT 'tuning',     -- tuning (used while improving the parser) | heldout_old | heldout_new (never used for tuning)
+    blind INTEGER NOT NULL DEFAULT 0          -- 1 = labeled without seeing the parser's is-it-an-application and status guess
 );
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -164,6 +166,10 @@ def init_db():
         for col, ddl in added.items():
             if col not in have:
                 conn.execute(f"ALTER TABLE applications ADD COLUMN {col} {ddl}")
+        have_e = {r["name"] for r in conn.execute("PRAGMA table_info(eval_items)")}
+        for col, ddl in (("split", "TEXT NOT NULL DEFAULT 'tuning'"), ("blind", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in have_e:
+                conn.execute(f"ALTER TABLE eval_items ADD COLUMN {col} {ddl}")    # existing rows become 'tuning'
         have_c = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
         added_c = {"channel": "TEXT NOT NULL DEFAULT ''", "source": "TEXT NOT NULL DEFAULT 'manual'", "ext_key": "TEXT NOT NULL DEFAULT ''",
                    "outreach_sent_at": "TEXT", "responded_at": "TEXT", "response_kind": "TEXT NOT NULL DEFAULT ''",
