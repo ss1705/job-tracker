@@ -318,10 +318,11 @@ def search_lines(srch: dict, window: str = "") -> list[str]:
     ci = srch.get("recall_ci")
     rng = f"{_f(ci[0]) if ci else 'n/a'} to {_f(ci[1]) if ci else 'n/a'}"
     h, c = srch["hot"], srch["cold"]
+    s = lambda k: "" if k == 1 else "s"
     return [f"I read the subject and sender of **all {srch['unmatched_universe']}** emails the search did not match{window} and flagged **{h['universe']}** "
-            f"as plausible application mail. Of those, {h['labeled']} were labeled by hand and **{h['job']} were real application emails**"
+            f"as plausible application mail. Of those, {h['labeled']} were labeled by hand and **{h['job']} {'was a' if h['job'] == 1 else 'were'} real application email{s(h['job'])}**"
             + (" (every suspect was checked, so this count is exact)." if h["exact"] else " (the rest are estimated)."), "",
-            f"The other {c['universe']} look unrelated; a random sample of {c['labeled']} of them contained {c['job']} real application emails ({_pct(c['rate'])}).", "",
+            f"The other {c['universe']} look unrelated; a random sample of {c['labeled']} of them contained {c['job']} real application email{s(c['job'])} ({_pct(c['rate'])}).", "",
             f"Estimate: about **{srch['estimated_found']} found vs {srch['estimated_missed']} missed**, search recall **{_f(srch['recall'])}** "
             f"(95% range **{rng}**; at most about {srch['missed_upper_bound']} missed).", ""]
 

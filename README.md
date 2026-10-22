@@ -118,9 +118,14 @@ contain only numbers.
 
 ### How accurate is it?
 
-See [`docs/EVAL.md`](docs/EVAL.md) for the full report. Those are **the author's results on the author's mailbox**; yours will differ,
-which is the reason the tool is included. The parser was tuned on part of that sample, so the figures are optimistic until re-measured
-on a fresh held-out sample.
+These are **the author's results on the author's mailbox**; yours will differ, which is the reason the tool is included. Full report:
+[`docs/EVAL.md`](docs/EVAL.md); method: [`docs/EVAL_PROTOCOL.md`](docs/EVAL_PROTOCOL.md).
+
+On a **held-out test** (emails the parser was never tuned on, labeled blind, parser frozen first), over 95 real application emails:
+status **85%** (95% CI 77–91%), company **97%**, role **62%**; detecting whether an email is an application: precision 88%, recall 98%.
+The LLM adds a lot over rules alone (status 55% → 85%, role 9% → 62%). The earlier in-sample figures (status 98%) were measured on
+emails the parser was tuned on and are shown in the report for comparison only. Known weak spots: role extraction, and "Action needed"
+being predicted for some ordinary receipts.
 
 ## Daily digest
 

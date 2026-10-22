@@ -224,8 +224,9 @@ def markdown(rep: dict, tuning_md: str = "") -> str:
     if not h:
         L += ["No held-out emails are labeled yet.", ""]
     else:
-        L += [f"**{h['n']} labeled emails**: {prog['heldout_new']['labeled']} received after the freeze, {prog['heldout_old']['labeled']} older ones "
-              "that were not in the tuning sample. Intervals are 95% Wilson intervals.", ""]
+        L += [f"Detection and extraction are scored on the **{h['n']} labeled emails the search matched** ({prog['heldout_new']['labeled']} emails were labeled after the freeze "
+              f"in total, {prog['heldout_old']['labeled']} older ones). The suspects and random unmatched emails feed the search-recall estimate below. "
+              "Intervals are 95% Wilson intervals; with this few real application emails they are wide.", ""]
         L += evalset.metric_tables(h, "###")
         for name, key in (("Received after the freeze", "prospective"), ("Older emails", "older")):
             r = rep.get(key)

@@ -968,7 +968,7 @@ function evalRender(item, sum) {
       <label class="field">Status<select id="evStatus">${undecided ? '<option value="" selected>Choose…</option>' : ""}${ESTATUS.map(([v, l]) => `<option value="${v}" ${!undecided && v === (p.status || "Other") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     </div>
     <div class="row" style="margin-top:12px"><button class="primary" data-ev="ok" title="Shortcut: Y">${editing ? "Save changes" : "Save (matches the email)"}</button>
-      <button data-ev="skip" title="Shortcut: S">${editing ? "Cancel" : "Skip"}</button><span class="muted" style="font-size:12px">Edit any field above, then Save. “Action needed” = they ask you for a form, documents or verification. “Other” = job-related but no clear outcome.</span></div>`;
+      <button data-ev="skip" title="Shortcut: S">${editing ? "Cancel" : "Skip"}</button><span class="muted" style="font-size:12px">Keys: N = not an application (saves), 1–7 = application with status Applied/OA/Interview/Offer/Rejected/Action/Other, Y or Enter = save, S = skip. Edit any field above, then Save. “Action needed” = they ask you for a form, documents or verification. “Other” = job-related but no clear outcome.</span></div>`;
   const toggle = () => { const j = $("#evJob").value === "1"; ["#evCompany", "#evRole", "#evStatus"].forEach(q => $(q).disabled = !j && $("#evJob").value !== ""); };
   $("#evJob").onchange = toggle; toggle();
 }
@@ -1014,8 +1014,11 @@ $("#evalCard").addEventListener("click", async e => {
 });
 document.addEventListener("keydown", e => {
   if ($("#evalView").hidden || e.target.closest("input, textarea, select") || !evItem) return;
-  if (e.key.toLowerCase() === "y") $('[data-ev="ok"]')?.click();
-  if (e.key.toLowerCase() === "s") $('[data-ev="skip"]')?.click();
+  const k = e.key.toLowerCase();
+  if (k === "y" || k === "enter") $('[data-ev="ok"]')?.click();
+  if (k === "s") $('[data-ev="skip"]')?.click();
+  if (k === "n") { $("#evJob").value = "0"; $("#evJob").dispatchEvent(new Event("change")); $('[data-ev="ok"]')?.click(); }
+  if (/^[1-7]$/.test(k)) { $("#evJob").value = "1"; $("#evJob").dispatchEvent(new Event("change")); $("#evStatus").value = ESTATUS[+k - 1][0]; }
 });
 
 $("#evalSampleBtn").onclick = async () => {
