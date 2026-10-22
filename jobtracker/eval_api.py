@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from . import config, db, evalset, gmail
+from . import config, db, evalset, gmail, heldout
 
 def _enabled():
     """The evaluation tools store email text, so they don't exist unless ENABLE_EVAL=1."""
@@ -28,6 +28,11 @@ class LabelRequest(BaseModel):
     company: str = ""
     role: str = ""
     status: str | None = None
+    blind: bool = False       # the parser's is-it-an-application and status guess were hidden while labeling
+
+
+class FreezeRequest(BaseModel):
+    cutoff: date | None = None
 
 
 @router.delete("/data")
@@ -36,7 +41,7 @@ def delete_data():
     with db.session() as conn:
         n = conn.execute("SELECT COUNT(*) FROM eval_items").fetchone()[0]
         conn.execute("DELETE FROM eval_items")
-        conn.execute("DELETE FROM meta WHERE key='eval_universe'")
+        conn.execute("DELETE FROM meta WHERE key IN ('eval_universe','eval_universe_prospective','eval_universe_older','eval_freeze')")
     err = config.DATA_DIR / "eval_errors.md"
     had_errors = err.exists()
     if had_errors:
@@ -85,9 +90,10 @@ def predict(body: PredictRequest | None = None):
 
 
 @router.get("/next")
-def next_item(after_id: int = 0, kind: str | None = None):
+def next_item(after_id: int = 0, kind: str | None = None, split: str | None = None, blind: bool = False):
     with db.session() as conn:
-        return {"item": evalset.next_item(conn, after_id, kind if kind in ("matched", "unmatched") else None)}
+        return {"item": evalset.next_item(conn, after_id, kind if kind in ("matched", "unmatched") else None,
+                                          split if split in ("tuning", "heldout") else None, blind)}
 
 
 @router.get("/labeled")
@@ -97,9 +103,9 @@ def labeled():
 
 
 @router.get("/item/{item_id}")
-def item(item_id: int):
+def item(item_id: int, blind: bool = False):
     with db.session() as conn:
-        it = evalset.get_item(conn, item_id)
+        it = evalset.get_item(conn, item_id, blind)
     if not it:
         raise HTTPException(404)
     return {"item": it}
@@ -121,8 +127,45 @@ def label(item_id: int, body: LabelRequest):
     with db.session() as conn:
         if not conn.execute("SELECT 1 FROM eval_items WHERE id=?", (item_id,)).fetchone():
             raise HTTPException(404)
-        evalset.label(conn, item_id, body.model_dump())
+        evalset.label(conn, item_id, body.model_dump(exclude={"blind"}), blind=body.blind)
         return evalset.summary(conn)
+
+
+@router.get("/heldout")
+def heldout_status():
+    with db.session() as conn:
+        return {"freeze": heldout.freeze_status(conn), "progress": heldout.progress(conn), "job": dict(evalset.state)}
+
+
+@router.post("/heldout/freeze")
+def heldout_freeze(body: FreezeRequest | None = None):
+    with db.session() as conn:
+        try:
+            heldout.freeze(conn, (body and body.cutoff) or date.today())
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        return heldout.freeze_status(conn)
+
+
+@router.post("/heldout/sample/{pool}")
+def heldout_sample(pool: str):
+    """pool = prospective (everything after the freeze date) or older (matched emails from before it)."""
+    if pool not in ("prospective", "older"):
+        raise HTTPException(404)
+    try:
+        gmail.authorize()
+    except gmail.AuthRequired as e:
+        raise HTTPException(401, str(e))
+    try:
+        return {"started": (heldout.start_prospective if pool == "prospective" else heldout.start_older)()}
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.get("/heldout/report")
+def heldout_report():
+    with db.session() as conn:
+        return heldout.report(conn)
 
 
 @router.get("/report")
@@ -141,8 +184,10 @@ def write_report():
     with db.session() as conn:
         rep = evalset.report(conn)
         errors = evalset.errors_markdown(conn)
+        held = heldout.report(conn) if heldout.freeze_status(conn)["frozen"] else None
     (root / "docs").mkdir(exist_ok=True)
-    (root / "docs" / "EVAL.md").write_text(evalset.markdown(rep), encoding="utf-8")
+    md = evalset.markdown(rep)
+    (root / "docs" / "EVAL.md").write_text(heldout.markdown(held, md) if held else md, encoding="utf-8")
     err_path = config.DATA_DIR / "eval_errors.md"
     err_path.write_text(errors, encoding="utf-8")
     err_path.chmod(0o600)

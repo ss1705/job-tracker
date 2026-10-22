@@ -175,23 +175,26 @@ def _predict_pending(redo: bool = False):
 
 # ---------------------------------------------------------------- labeling
 
-def _row(r) -> dict:
-    return {"id": r["id"], "kind": r["kind"], "subject": r["subject"], "sender": r["sender"], "received_at": r["received_at"][:10],
-            "body": r["body"][:1800], "pred": json.loads(r["pred_json"]) if r["pred_json"] else None,
-            "truth": json.loads(r["truth_json"]) if r["truth_json"] else None}
+def _row(r, blind: bool = False) -> dict:
+    pred = json.loads(r["pred_json"]) if r["pred_json"] else None
+    if blind and pred:                    # blind labeling: keep the company and role guess to correct, hide whether-it-is-an-application and status
+        pred = {**pred, "is_job": None, "status": None, "via": ""}
+    return {"id": r["id"], "kind": r["kind"], "split": r["split"], "subject": r["subject"], "sender": r["sender"], "received_at": r["received_at"][:10],
+            "body": r["body"][:1800], "pred": pred, "truth": json.loads(r["truth_json"]) if r["truth_json"] else None}
 
 
-def next_item(conn, after_id: int = 0, kind: str | None = None) -> dict | None:
-    q = "SELECT * FROM eval_items WHERE truth_json='' AND pred_json<>'' AND id>?" + (" AND kind=?" if kind else "") + " ORDER BY id LIMIT 1"
-    r = conn.execute(q, (after_id, kind) if kind else (after_id,)).fetchone()
+def next_item(conn, after_id: int = 0, kind: str | None = None, split: str | None = None, blind: bool = False) -> dict | None:
+    q = ("SELECT * FROM eval_items WHERE truth_json='' AND pred_json<>'' AND id>?" + (" AND kind=?" if kind else "")
+         + (" AND split IN ('heldout_new','heldout_old')" if split == "heldout" else " AND split=?" if split else "") + " ORDER BY id LIMIT 1")
+    r = conn.execute(q, (after_id, *([kind] if kind else []), *([split] if split and split != "heldout" else []))).fetchone()
     if r is None and after_id:
-        return next_item(conn, 0, kind)             # wrap around to skipped items
-    return _row(r) if r else None
+        return next_item(conn, 0, kind, split, blind)    # wrap around to skipped items
+    return _row(r, blind) if r else None
 
 
-def get_item(conn, item_id: int) -> dict | None:
+def get_item(conn, item_id: int, blind: bool = False) -> dict | None:
     r = conn.execute("SELECT * FROM eval_items WHERE id=?", (item_id,)).fetchone()
-    return _row(r) if r else None
+    return _row(r, blind) if r else None
 
 
 def list_labeled(conn, limit: int = 400) -> list[dict]:
@@ -208,7 +211,7 @@ def list_labeled(conn, limit: int = 400) -> list[dict]:
 
 
 def unlabel(conn, item_id: int) -> None:
-    conn.execute("UPDATE eval_items SET truth_json='', labeled_at=NULL WHERE id=?", (item_id,))
+    conn.execute("UPDATE eval_items SET truth_json='', labeled_at=NULL, blind=0 WHERE id=?", (item_id,))
 
 
 def label(conn, item_id: int, truth: dict, blind: bool = False) -> None:

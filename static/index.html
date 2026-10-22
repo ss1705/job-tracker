@@ -283,7 +283,17 @@
   </div>
 
   <div id="evalView" hidden>
-    <section class="card">
+    <section class="card" id="hoCard">
+      <div class="row"><strong>Held-out test</strong><span id="hoStatus" class="muted" style="font-size:13px"></span><span style="flex:1"></span>
+        <input id="hoCutoff" type="date" title="Emails received on or after this date form the prospective set">
+        <button id="hoFreezeBtn" title="Record the cutoff date and a hash of the parser. Do this once, before labeling.">Freeze parser</button>
+        <button id="hoNewBtn" title="Every email received since the cutoff: all the search found, all suspects, plus random others">Sample after freeze</button>
+        <button id="hoOldBtn" title="Random matched emails from before the cutoff that were not in the tuning sample">Sample older</button>
+        <button id="hoLabelBtn" class="primary" title="Label held-out emails without seeing the parser's guess at is-it-an-application and status">Label held-out (blind)</button></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Held-out emails are ones the parser was never tuned on. Once frozen, don't change <code>parser.py</code> or <code>gmail.py</code>; errors found here are future work, not fixes to re-score. Protocol: docs/EVAL_PROTOCOL.md.</div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
       <div class="row"><strong>Evaluation set</strong><span id="evalProgress" class="muted" style="font-size:13px"></span><span style="flex:1"></span>
         <button id="evalSampleBtn" title="Pick random emails from your mailbox: some the search finds, some it doesn't">Sample my mailbox</button>
         <button id="evalPredictBtn" title="Run the parser on sampled emails that have no prediction yet">Run pipeline</button>
@@ -927,7 +937,7 @@ loadResume();
 
 // ---------------------------------------------------------------- evaluation
 const ESTATUS = [["Applied", "Applied"], ["OA", "OA"], ["Interview", "Interview"], ["Offer", "Offer"], ["Rejected", "Rejected"], ["Action", "Action needed"], ["Other", "Other"]];
-let evItem = null, evAfter = 0, evPoll = null;
+let evItem = null, evAfter = 0, evPoll = null, evBlind = false;
 
 async function evalSummary() {
   const s = await api("/api/eval/summary").catch(() => null); if (!s) return;
@@ -944,7 +954,7 @@ function evalRender(item, sum) {
   const box = $("#evalCard");
   box.hidden = false;
   if (!item) { box.innerHTML = '<div class="muted">Nothing left to label right now. Sample more, or wait for predictions to finish.</div>'; return; }
-  const p = item.truth || item.pred, isJob = p.is_job, editing = !!item.truth;
+  const p = item.truth || item.pred, isJob = p.is_job, editing = !!item.truth, undecided = isJob === null || isJob === undefined;
   box.innerHTML = `
     ${editing ? '<div class="pill maybe" style="display:inline-block;margin-bottom:8px">Editing a saved label</div>' : ""}
     <div class="row"><span class="pill ${item.kind === "matched" ? "yes" : "maybe"}">${item.kind === "matched" ? "search found it" : "search did NOT find it"}</span>
@@ -952,28 +962,54 @@ function evalRender(item, sum) {
     <h3 style="margin:8px 0 8px;font-size:16px">${esc(item.subject) || "(no subject)"}</h3>
     <div class="email-body">${esc(item.body) || "(empty body)"}</div>
     <div class="row" style="margin-top:14px;align-items:flex-end">
-      <label class="field">Application email?<select id="evJob"><option value="1" ${isJob ? "selected" : ""}>Yes</option><option value="0" ${isJob ? "" : "selected"}>No</option></select></label>
+      <label class="field">Application email?<select id="evJob">${undecided ? '<option value="" selected>Choose…</option>' : ""}<option value="1" ${isJob ? "selected" : ""}>Yes</option><option value="0" ${isJob || undecided ? "" : "selected"}>No</option></select></label>
       <label class="field">Company<input id="evCompany" value="${esc(p.company || "")}" style="width:170px"></label>
       <label class="field">Role<input id="evRole" value="${esc(p.role || "")}" style="width:220px"></label>
-      <label class="field">Status<select id="evStatus">${ESTATUS.map(([v, l]) => `<option value="${v}" ${v === (p.status || "Other") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label class="field">Status<select id="evStatus">${undecided ? '<option value="" selected>Choose…</option>' : ""}${ESTATUS.map(([v, l]) => `<option value="${v}" ${!undecided && v === (p.status || "Other") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     </div>
     <div class="row" style="margin-top:12px"><button class="primary" data-ev="ok" title="Shortcut: Y">${editing ? "Save changes" : "Save (matches the email)"}</button>
       <button data-ev="skip" title="Shortcut: S">${editing ? "Cancel" : "Skip"}</button><span class="muted" style="font-size:12px">Edit any field above, then Save. “Action needed” = they ask you for a form, documents or verification. “Other” = job-related but no clear outcome.</span></div>`;
-  const toggle = () => { const j = $("#evJob").value === "1"; ["#evCompany", "#evRole", "#evStatus"].forEach(q => $(q).disabled = !j); };
+  const toggle = () => { const j = $("#evJob").value === "1"; ["#evCompany", "#evRole", "#evStatus"].forEach(q => $(q).disabled = !j && $("#evJob").value !== ""); };
   $("#evJob").onchange = toggle; toggle();
 }
 
 async function evalNext(after = evAfter) {
-  const r = await api(`/api/eval/next?after_id=${after}`).catch(() => ({ item: null }));
+  const r = await api(`/api/eval/next?after_id=${after}&split=${evBlind ? "heldout&blind=true" : "tuning"}`).catch(() => ({ item: null }));
   evItem = r.item; evalRender(r.item);
 }
+
+async function hoStatus() {
+  const s = await api("/api/eval/heldout").catch(() => null); if (!s) return;
+  const f = s.freeze, n = s.progress.heldout_new, o = s.progress.heldout_old;
+  $("#hoStatus").textContent = !f.frozen ? "Not frozen yet." : `Frozen ${f.at.slice(0, 10)} at ${f.commit || "?"}, window from ${f.cutoff}${f.unchanged ? "" : " · PARSER CHANGED SINCE FREEZE"} · after freeze ${n.labeled}/${n.total} labeled · older ${o.labeled}/${o.total} labeled (${n.blind + o.blind} blind)`;
+  if (!$("#hoCutoff").value) $("#hoCutoff").value = f.frozen ? f.cutoff : new Date().toISOString().slice(0, 10);
+  $("#hoFreezeBtn").disabled = !!s.job.running;
+  $("#hoNewBtn").disabled = $("#hoOldBtn").disabled = !f.frozen || !f.unchanged || !!s.job.running;
+  $("#hoLabelBtn").textContent = evBlind ? "Back to in-sample labeling" : "Label held-out (blind)";
+}
+const hoErr = err => { $("#evalJob").className = "err"; $("#evalJob").textContent = err.message; };
+$("#hoFreezeBtn").onclick = async () => {
+  if (!confirm("Freeze the parser as it is now? This records the cutoff date and the code's hash. Held-out results only count if parser.py and gmail.py do not change afterwards.")) return;
+  try { await api("/api/eval/heldout/freeze", { method: "POST", body: JSON.stringify({ cutoff: $("#hoCutoff").value || null }) }); } catch (err) { return hoErr(err); }
+  hoStatus();
+};
+for (const [id, pool, ask] of [["#hoNewBtn", "prospective", "Download every email received since the cutoff (plus a random sample of the rest) and run the parser on them?"],
+                               ["#hoOldBtn", "older", "Sample about 200 older matched emails that were not in the tuning sample?"]]) {
+  $(id).onclick = async () => {
+    if (!confirm(ask)) return;
+    try { await api(`/api/eval/heldout/sample/${pool}`, { method: "POST" }); } catch (err) { return hoErr(err); }
+    evalSummary(); hoStatus();
+  };
+}
+$("#hoLabelBtn").onclick = async () => { evBlind = !evBlind; evAfter = 0; await hoStatus(); await evalNext(0); };
 
 $("#evalCard").addEventListener("click", async e => {
   const b = e.target.closest("[data-ev]"); if (!b || !evItem) return;
   if (b.dataset.ev === "skip") { if (evItem.truth) { evAfter = 0; await evalNext(0); return; } evAfter = evItem.id; await evalNext(evAfter); return; }
   const isJob = $("#evJob").value === "1";
+  if ($("#evJob").value === "" || (isJob && $("#evStatus").value === "")) { alert("Choose whether it is an application email and, if so, its status."); return; }
   await api(`/api/eval/${evItem.id}/label`, { method: "POST", body: JSON.stringify({
-    is_job: isJob, company: isJob ? $("#evCompany").value : "", role: isJob ? $("#evRole").value : "", status: isJob ? $("#evStatus").value : null }) });
+    is_job: isJob, company: isJob ? $("#evCompany").value : "", role: isJob ? $("#evRole").value : "", status: isJob ? $("#evStatus").value : null, blind: evBlind }) });
   evAfter = 0; await evalSummary(); await evalNext(0); if (!$("#evFilter").hidden) evalLabeled();
 });
 document.addEventListener("keydown", e => {
@@ -1030,7 +1066,7 @@ $("#evFilter").addEventListener("input", evalLabeled);
 $("#evLabeled").addEventListener("click", async e => {
   const b = e.target.closest("[data-evl]"); if (!b) return;
   if (b.dataset.evl === "edit") {
-    const r = await api(`/api/eval/item/${b.dataset.id}`); evItem = r.item; evalRender(r.item); $("#evalCard").scrollIntoView({ behavior: "smooth", block: "start" });
+    const r = await api(`/api/eval/item/${b.dataset.id}?blind=${evBlind}`); evItem = r.item; evalRender(r.item); $("#evalCard").scrollIntoView({ behavior: "smooth", block: "start" });
   } else if (confirm("Put this email back in the to-label queue?")) {
     await api(`/api/eval/${b.dataset.id}/unlabel`, { method: "POST" }); await evalSummary(); await evalLabeled(); if (!evItem || evItem.id === +b.dataset.id) await evalNext(0);
   }
@@ -1147,7 +1183,7 @@ function setTab(tab) {
   $("#addBtn").hidden = tab !== "apps"; $("#addContactBtn").hidden = tab !== "contacts"; $("#importBtn").hidden = tab !== "contacts";
   document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
   store.set("tab", tab);
-  if (tab === "eval") { evalSummary(); if (!evItem) evalNext(0); }
+  if (tab === "eval") { evalSummary(); hoStatus(); if (!evItem) evalNext(0); }
 }
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
 const wantedTab = new URLSearchParams(location.hash.slice(1)).get("tab") || store.get("tab") || "apps";

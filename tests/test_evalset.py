@@ -134,3 +134,35 @@ def test_evaluation_tools_do_not_exist_unless_enabled(tmp_path, monkeypatch):
             r = getattr(c, method)(path)
             assert r.status_code == 404 and "ENABLE_EVAL" in r.json()["detail"], path           # nothing is stored or reachable
         assert c.get("/api/applications").status_code == 200                                      # the rest of the app is unaffected
+
+
+def test_heldout_is_frozen_blind_and_kept_out_of_the_tuning_numbers(client, monkeypatch):
+    c, db, evalset = client
+    from jobtracker import heldout
+    with db.session() as conn, pytest.raises(ValueError, match="Freeze"):
+        heldout._require_freeze(conn)                                                      # nothing may be sampled before the freeze
+    assert c.post("/api/eval/heldout/freeze", json={"cutoff": "2026-10-11"}).json()["unchanged"]
+    with db.session() as conn:
+        conn.execute("INSERT INTO eval_items (gmail_id, kind, subject, sender, body, split) VALUES ('h1','matched',?,?,?,'heldout_new')",
+                     ("Thank you for applying to Acme!", "Acme <no-reply@us.greenhouse-mail.io>", "Thanks for applying to the Software Engineer role at Acme."))
+    evalset._predict_pending()
+
+    assert c.get("/api/eval/next?split=tuning").json()["item"] is None                    # held-out mail never appears in normal labeling
+    guess = c.get("/api/eval/next?split=heldout&blind=true").json()["item"]["pred"]
+    assert guess["is_job"] is None and guess["status"] is None and guess["company"]       # blind: company/role to correct, no verdict
+    item_id = c.get("/api/eval/next?split=heldout").json()["item"]["id"]
+    c.post(f"/api/eval/{item_id}/label", json=dict(is_job=True, company="Acme", role="Software Engineer", status="Applied", blind=True))
+
+    rep = c.get("/api/eval/heldout/report").json()
+    assert rep["heldout"]["n"] == 1 and rep["progress"]["heldout_new"]["blind"] == 1
+    with db.session() as conn:
+        assert evalset._labeled(conn, "matched") == []                                    # the in-sample report doesn't include it
+    assert c.post("/api/eval/heldout/freeze", json={"cutoff": "2026-10-12"}).status_code == 409   # frozen for good once labels exist
+
+    monkeypatch.setattr(heldout, "_hashes", lambda: {f: "changed" for f in heldout.FREEZE_FILES})
+    st = c.get("/api/eval/heldout").json()["freeze"]
+    assert not st["unchanged"] and st["changed_files"]
+    with db.session() as conn:
+        with pytest.raises(ValueError, match="changed"):
+            heldout._require_freeze(conn)                                                  # a changed parser is refused
+        assert "no longer matches" in heldout.markdown(heldout.report(conn))
