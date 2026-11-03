@@ -127,6 +127,12 @@ CREATE TABLE IF NOT EXISTS eval_items (
     blind INTEGER NOT NULL DEFAULT 0          -- 1 = labeled without seeing the parser's is-it-an-application and status guess
 );
 
+-- the job description you pasted for an application, kept apart from the applications list so that list stays small
+CREATE TABLE IF NOT EXISTS application_jobs (
+    application_id INTEGER PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+    text TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 -- every Gmail message we've looked at, so re-syncs are cheap and idempotent

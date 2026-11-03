@@ -82,6 +82,13 @@ personal detail, and runs a second fact-check pass that flags anything the sourc
 never sends anything: you copy the text, send it on LinkedIn, and press **I sent it**, which logs the outreach (stage, date,
 channel, the text you sent) in Contacts. Set `OUTREACH_GOAL` in `.env` to change what you ask people for.
 
+**Recruiters, for an application:** switch the Outreach tab to *A recruiter, for an application* (or press **Draft recruiter message** on an
+application). Pick the application and, optionally, paste the job description. It writes a LinkedIn note and an email that say what you
+applied for (it knows from the tracker whether you have actually applied, and won't claim otherwise) and tie one verified line from your
+resume to the role. The recruiter becomes a contact linked to that application. **Tone**, **length** and an "anything else?" box
+(for example "less formal") shape the style only; the fact rules and the fact-check still apply. Once you log a message with
+**I sent it**, **Draft a follow-up** writes a short nudge based on the text you actually sent.
+
 ## Deadlines and interviews
 
 OA and interview emails are scanned for dates ("complete by Oct 12, 11:59 PM ET", "you have 7 days", "interview on Tuesday at 2 PM PT").

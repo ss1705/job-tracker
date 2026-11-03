@@ -267,13 +267,25 @@
     </section>
 
     <section class="card" style="margin-top:16px">
-      <h2 style="margin:0 0 2px;font-size:16px">Draft a message</h2>
-      <div class="muted" style="font-size:13px">Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and uses USC when you share it. You review, copy and send it on LinkedIn yourself.</div>
-      <label class="field-block">LinkedIn profile link<input id="oUrl" placeholder="https://www.linkedin.com/in/…"></label>
+      <div class="row"><h2 style="margin:0;font-size:16px">Draft a message</h2><span style="flex:1"></span>
+        <button id="oModePerson" class="primary" title="A LinkedIn note and a follow-up to a person you want to meet">A person</button>
+        <button id="oModeRecruiter" title="A LinkedIn note and an email to a recruiter about a role you applied for or plan to apply for">A recruiter, for an application</button></div>
+      <div id="oModeHelp" class="muted" style="font-size:13px;margin-top:4px">Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and uses USC when you share it. You review, copy and send it yourself.</div>
+      <div id="oRecruiterFields" hidden>
+        <label class="field-block">Application<select id="oApp"></select></label>
+        <div id="oAppNote" class="muted" style="font-size:12px;margin-top:4px"></div>
+        <label class="field-block">Job description <span style="opacity:.7">(optional, but it lets the draft pick the resume lines that fit; saved with the application)</span>
+          <textarea id="oJob" rows="5" placeholder="Paste the posting text"></textarea></label>
+        <label class="field-block">Recruiter’s name <span style="opacity:.7">(leave empty if you don’t know it)</span><input id="oName" placeholder="e.g. Jordan Lee"></label>
+      </div>
+      <label class="field-block"><span id="oUrlLabel">LinkedIn profile link</span><input id="oUrl" placeholder="https://www.linkedin.com/in/…"></label>
       <label class="field-block">Their profile text <span style="opacity:.7">(open their profile, select all, copy, paste here; even just the headline helps)</span>
         <textarea id="oProfile" rows="7" placeholder="Name, headline, About, Experience, Education…"></textarea></label>
       <div class="row" style="margin-top:12px">
-        <label class="field">Same school?<select id="oUsc"><option value="">Auto-detect USC</option><option value="yes">Yes, they’re a USC alum</option><option value="no">No, don’t mention USC</option></select></label>
+        <label class="field" id="oUscField">Same school?<select id="oUsc"><option value="">Auto-detect USC</option><option value="yes">Yes, they’re a USC alum</option><option value="no">No, don’t mention USC</option></select></label>
+        <label class="field">Tone<select id="oTone"><option value="standard">Standard</option><option value="warm">Warm</option><option value="direct">Direct</option><option value="formal">Formal</option></select></label>
+        <label class="field">Length<select id="oLength"><option value="standard">Standard</option><option value="short">Short</option></select></label>
+        <label class="field" style="flex:1;min-width:180px">Anything else? <input id="oExtra" placeholder="e.g. less formal, mention my co-op"></label>
         <button class="primary" id="oDraft" style="align-self:flex-end">Draft</button>
         <span id="oMsg" class="muted" style="align-self:center"></span>
       </div>
@@ -502,6 +514,7 @@ async function loadDetail(id) {
       ${a.follow_up_due ? `<div class="sync-note" style="margin-top:10px"><b>${esc(a.follow_up_reason)}.</b></div>` : ""}
       <div class="actions">
         ${a.status === "Saved" ? '<button class="primary" data-act="applied">Mark applied</button>' : ""}
+        <button data-act="recruiter" title="Draft a LinkedIn note and an email to a recruiter about this application">Draft recruiter message</button>
         ${a.action_open ? "" : '<button data-act="flag-action" title="Flag that this company is waiting on something from you">Needs my action</button>'}
         ${a.follow_up_due || a.contact_type || a.follow_up_at ? '<button data-act="followed">Followed up</button><button data-act="snooze">Snooze 1 week</button>' : ""}
         ${a.needs_review ? '<button data-act="reviewed">Mark reviewed</button>' : ""}
@@ -554,6 +567,7 @@ $("#rows").addEventListener("click", async e => {
     const r = await api(`/api/applications/${id}/split`, { method: "POST", body: JSON.stringify({ event_ids: [+b.dataset.event], role }) });
     openId = r.new_id; await load();
   }
+  if (b.dataset.act === "recruiter") { await openRecruiterFor(id); return; }
   if (b.dataset.act === "action-done") { await api(`/api/applications/${id}/action-done`, { method: "POST" }); await load(); }
   if (b.dataset.act === "flag-action") {
     const note = prompt("What do they need from you? (a form, documents, verification…)"); if (note === null) return;
@@ -870,39 +884,102 @@ function counter(el, max) {
   out.classList.toggle("over", !!max && el.value.length > max);
 }
 
+const OH = 'style="margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)"';
+let oMode = "person";
+
+function setOMode(mode) {
+  oMode = mode;
+  $("#oModePerson").classList.toggle("primary", mode === "person"); $("#oModeRecruiter").classList.toggle("primary", mode === "recruiter");
+  $("#oRecruiterFields").hidden = mode !== "recruiter"; $("#oUscField").hidden = mode === "recruiter";
+  $("#oUrlLabel").textContent = mode === "recruiter" ? "Recruiter’s LinkedIn link (optional)" : "LinkedIn profile link";
+  $("#oModeHelp").textContent = mode === "recruiter"
+    ? "Pick an application. It writes a LinkedIn note and an email to the recruiter that say what you applied for and tie one thing you built to the role. You review, copy and send them yourself."
+    : "Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and uses USC when you share it. You review, copy and send it yourself.";
+  if (mode === "recruiter") fillAppSelect();
+}
+function fillAppSelect(selected) {
+  const sel = $("#oApp"), keep = selected || sel.value;
+  sel.innerHTML = '<option value="">Choose an application…</option>' + [...apps].sort((x, y) => (x.company || "").localeCompare(y.company || ""))
+    .map(a => `<option value="${a.id}">${esc(a.company)}${a.role ? " — " + esc(a.role) : ""} (${esc(a.status)})</option>`).join("");
+  if (keep) sel.value = String(keep);
+}
+async function onAppPicked() {
+  const id = +$("#oApp").value; $("#oAppNote").textContent = "";
+  if (!id) return;
+  const r = await api(`/api/outreach/application/${id}`).catch(() => null); if (!r) return;
+  $("#oJob").value = r.job_text || "";
+  const rs = r.recruiters || [];
+  $("#oAppNote").textContent = rs.length ? `Already tracking: ${rs.map(x => x.name + (x.outreach_sent_at ? " (messaged " + x.outreach_sent_at.slice(0, 10) + ")" : "")).join(", ")}.` : "";
+}
+$("#oApp").onchange = onAppPicked;
+$("#oModePerson").onclick = () => setOMode("person");
+$("#oModeRecruiter").onclick = () => setOMode("recruiter");
+
+const draftBox = (title, id, text, extraRows = "", buttons = "") => `
+  <div class="draft-box" style="margin-top:14px"><h4 ${OH}>${title}</h4>
+    ${extraRows}<textarea id="${id}" style="width:100%">${esc(text)}</textarea>
+    <div class="row" style="margin-top:6px"><span class="counter"></span><span style="flex:1"></span>${buttons}</div></div>`;
+const subjectRow = id => `<input id="${id}" style="width:100%;margin-bottom:6px" aria-label="Subject">`;
+
 function renderDraft(r) {
   oContactId = r.contact.id; oDraft = r.draft; NOTE_MAX = (r.draft.limits && r.draft.limits.note_max) || 200;
-  const d = r.draft, u = d.usc, label = { yes: "USC alum", maybe: "Maybe USC", no: "Not USC" }[u.used] || "";
+  const d = r.draft, u = d.usc || { used: "no", evidence: [] }, rec = d.kind === "recruiter";
+  const label = rec ? "Recruiter" : ({ yes: "USC alum", maybe: "Maybe USC", no: "Not USC" }[u.used] || "");
   const box = $("#oResult");
   box.hidden = false;
   box.innerHTML = `
     <div class="row"><h2 style="margin:0;font-size:16px">${esc(r.contact.name)}</h2>
       <span class="muted">${esc([r.contact.title, r.contact.company].filter(Boolean).join(" · "))}</span>
-      <span class="pill ${u.used}" title="${esc((u.evidence || []).join("; "))}">${label}</span>
+      <span class="pill ${rec ? "maybe" : u.used}" title="${esc((u.evidence || []).join("; "))}">${label}</span>
       <span style="flex:1"></span>
       ${r.contact.link ? `<a href="${esc(r.contact.link)}" target="_blank" rel="noopener">Open profile ↗</a>` : ""}</div>
-    ${u.evidence && u.evidence.length ? `<div class="muted" style="font-size:12px;margin-top:4px">USC check: ${esc(u.evidence.join("; "))}</div>` : ""}
+    ${!rec && u.evidence && u.evidence.length ? `<div class="muted" style="font-size:12px;margin-top:4px">USC check: ${esc(u.evidence.join("; "))}</div>` : ""}
     ${d.warnings.length ? `<ul class="hooks" style="color:var(--warn)">${d.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
-    <div class="draft-box" style="margin-top:14px"><h4 style="margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Connection note</h4>
-      <textarea id="oNote" style="width:100%;min-height:90px">${esc(d.note)}</textarea>
-      <div class="row" style="margin-top:6px"><span class="counter"></span><span style="flex:1"></span>
-        <button data-o="copy-note">Copy</button><button data-o="sent-note" title="Log this outreach in Contacts as Reached out">I sent it</button></div></div>
-    <div class="draft-box" style="margin-top:14px"><h4 style="margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Message after they accept</h4>
-      <textarea id="oMessage" style="width:100%">${esc(d.message)}</textarea>
-      <div class="row" style="margin-top:6px"><span class="counter"></span><span style="flex:1"></span>
-        <button data-o="copy-message">Copy</button><button data-o="sent-message" title="Log this outreach in Contacts as Reached out">I sent it</button></div></div>
-    ${d.hooks.length ? `<h4 style="margin:16px 0 0;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">What it’s based on (check these)</h4>
+    ${draftBox("Connection note", "oNote", d.note, "", `<button data-o="copy-note">Copy</button><button data-o="sent-note" title="Log this outreach in Contacts as Reached out">I sent it</button>`)}
+    ${rec ? draftBox("Email", "oEmailBody", d.email.body, subjectRow("oEmailSubject"),
+              `<button data-o="copy-subject">Copy subject</button><button data-o="copy-email">Copy body</button><button data-o="sent-email" title="Log this email in Contacts as Reached out">I sent it</button>`)
+          : draftBox("Message after they accept", "oMessage", d.message, "", `<button data-o="copy-message">Copy</button><button data-o="sent-message" title="Log this outreach in Contacts as Reached out">I sent it</button>`)}
+    ${(d.points || []).length ? `<h4 style="margin:16px 0 0;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Resume lines it leaned on for this role</h4>
+      <ul class="hooks">${d.points.map(p => `<li><q>${esc(p.quote)}</q> <span class="muted">${esc(p.why)}</span></li>`).join("")}</ul>` : ""}
+    ${(d.hooks || []).length ? `<h4 style="margin:16px 0 0;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">What it’s based on (check these)</h4>
       <ul class="hooks">${d.hooks.map(h => `<li>${esc(h.claim)} <span class="muted">[${esc(h.source)}]</span> ${h.quote ? `<q>${esc(h.quote)}</q>` : ""}</li>`).join("")}</ul>` : ""}
-    <div class="row" style="margin-top:14px"><button data-o="regen">Regenerate</button><span id="oSentMsg" class="muted"></span></div>`;
-  counter($("#oNote"), NOTE_MAX); counter($("#oMessage"), 0);
-  $("#oNote").oninput = () => counter($("#oNote"), NOTE_MAX); $("#oMessage").oninput = () => counter($("#oMessage"), 0);
+    <div class="row" style="margin-top:14px"><button data-o="regen">Regenerate</button>
+      ${r.contact.outreach_sent_at ? '<button data-o="followup" title="A short, polite nudge based on the message you logged as sent">Draft a follow-up</button>' : ""}
+      <span id="oSentMsg" class="muted"></span></div>
+    <div id="oFollow"></div>`;
+  counter($("#oNote"), NOTE_MAX); $("#oNote").oninput = () => counter($("#oNote"), NOTE_MAX);
+  if (rec) { $("#oEmailSubject").value = d.email.subject; counter($("#oEmailBody"), 0); $("#oEmailBody").oninput = () => counter($("#oEmailBody"), 0); }
+  else { counter($("#oMessage"), 0); $("#oMessage").oninput = () => counter($("#oMessage"), 0); }
+  if (r.draft.followup) renderFollowup(r.draft.followup);
 }
+
+function renderFollowup(f) {
+  $("#oFollow").innerHTML = `<hr style="margin:18px 0 4px;border:none;border-top:1px solid var(--line)">
+    <div class="muted" style="font-size:12px">Follow-up, drafted ${f.days_since} day${f.days_since === 1 ? "" : "s"} after you last sent something.</div>
+    ${f.warnings.length ? `<ul class="hooks" style="color:var(--warn)">${f.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+    ${draftBox("Follow-up message", "oFMessage", f.message, "", `<button data-o="copy-fmessage">Copy</button><button data-o="sent-followup" title="Log this follow-up in Contacts">I sent it</button>`)}
+    ${draftBox("Follow-up email", "oFEmailBody", f.email.body, subjectRow("oFEmailSubject"), `<button data-o="copy-fsubject">Copy subject</button><button data-o="copy-femail">Copy body</button><button data-o="sent-followup-email" title="Log this follow-up email in Contacts">I sent it</button>`)}`;
+  $("#oFEmailSubject").value = f.email.subject;
+  counter($("#oFMessage"), 0); counter($("#oFEmailBody"), 0);
+  $("#oFMessage").oninput = () => counter($("#oFMessage"), 0); $("#oFEmailBody").oninput = () => counter($("#oFEmailBody"), 0);
+}
+
+const oOptions = () => ({ tone: $("#oTone").value, length: $("#oLength").value, instructions: $("#oExtra").value.trim() });
 
 async function runDraft(extra = {}) {
   const btn = $("#oDraft"), msg = $("#oMsg"); btn.disabled = true; msg.className = "muted"; msg.textContent = "Drafting… (about 10 seconds)";
   try {
-    const body = { url: $("#oUrl").value.trim(), profile_text: $("#oProfile").value, usc_override: $("#oUsc").value || null, contact_id: oContactId, ...extra };
-    const r = await api("/api/outreach/draft", { method: "POST", body: JSON.stringify(body) });
+    let r;
+    if (oMode === "recruiter") {
+      const appId = +$("#oApp").value;
+      if (!appId) throw new Error("Choose an application first.");
+      r = await api("/api/outreach/recruiter", { method: "POST", body: JSON.stringify({
+        application_id: appId, name: $("#oName").value.trim(), url: $("#oUrl").value.trim(), profile_text: $("#oProfile").value,
+        job_text: $("#oJob").value, contact_id: oContactId, ...oOptions(), ...extra }) });
+    } else {
+      r = await api("/api/outreach/draft", { method: "POST", body: JSON.stringify({
+        url: $("#oUrl").value.trim(), profile_text: $("#oProfile").value, usc_override: $("#oUsc").value || null, contact_id: oContactId, ...oOptions(), ...extra }) });
+    }
     renderDraft(r); msg.textContent = "";
     loadContacts(); load();
   } catch (err) { msg.className = "err"; msg.textContent = err.message; }
@@ -910,19 +987,33 @@ async function runDraft(extra = {}) {
 }
 $("#oDraft").onclick = () => { oContactId = null; runDraft(); };
 
+const copyText = async (text, b) => {
+  try { await navigator.clipboard.writeText(text); } catch { const ta = document.createElement("textarea"); ta.value = text; document.body.append(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
+  const old = b.textContent; b.textContent = "Copied ✓"; setTimeout(() => b.textContent = old, 1500);
+};
+
 $("#oResult").addEventListener("click", async e => {
   const b = e.target.closest("[data-o]"); if (!b) return;
   const act = b.dataset.o, sent = $("#oSentMsg");
   if (act === "regen") { await runDraft({ contact_id: oContactId }); return; }
-  if (act.startsWith("copy-")) {
-    const ta = $(act === "copy-note" ? "#oNote" : "#oMessage");
-    try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); document.execCommand("copy"); }
-    const old = b.textContent; b.textContent = "Copied ✓"; setTimeout(() => b.textContent = old, 1500); return;
+  if (act === "followup") {
+    b.disabled = true; sent.className = "muted"; sent.textContent = "Drafting a follow-up…";
+    try {
+      const r = await api(`/api/outreach/followup/${oContactId}`, { method: "POST", body: JSON.stringify({ tone: $("#oTone").value, instructions: $("#oExtra").value.trim() }) });
+      renderFollowup(r.followup); sent.textContent = ""; $("#oFollow").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (err) { sent.className = "err"; sent.textContent = err.message; }
+    b.disabled = false; return;
   }
+  const field = { "copy-note": "#oNote", "copy-message": "#oMessage", "copy-email": "#oEmailBody", "copy-subject": "#oEmailSubject",
+                  "copy-fmessage": "#oFMessage", "copy-femail": "#oFEmailBody", "copy-fsubject": "#oFEmailSubject" }[act];
+  if (field) { await copyText($(field).value, b); return; }
   if (act.startsWith("sent-")) {
-    const which = act.slice(5), text = $(which === "note" ? "#oNote" : "#oMessage").value;
+    const which = act === "sent-followup-email" ? "followup" : act.slice(5);
+    const text = act === "sent-note" ? $("#oNote").value : act === "sent-message" ? $("#oMessage").value
+      : act === "sent-email" ? `Subject: ${$("#oEmailSubject").value}\n\n${$("#oEmailBody").value}`
+      : act === "sent-followup" ? $("#oFMessage").value : `Subject: ${$("#oFEmailSubject").value}\n\n${$("#oFEmailBody").value}`;
     await api(`/api/contacts/${oContactId}/mark-sent`, { method: "POST", body: JSON.stringify({ which, text }) });
-    sent.className = ""; sent.textContent = "Logged in Contacts as Reached out (today).";
+    sent.className = ""; sent.textContent = which === "followup" ? "Follow-up logged in Contacts (today)." : "Logged in Contacts as Reached out (today).";
     await loadContacts(); await load();
   }
 });
@@ -930,8 +1021,15 @@ $("#oResult").addEventListener("click", async e => {
 async function openOutreachFor(id) {
   const r = await api(`/api/outreach/contact/${id}`);
   oContactId = id; $("#oUrl").value = r.contact.link || ""; $("#oProfile").value = r.profile_text || ""; $("#oResult").hidden = true;
+  const rec = r.draft && r.draft.kind === "recruiter";
+  setOMode(rec ? "recruiter" : "person");
+  if (rec) { fillAppSelect(r.contact.application_id); $("#oName").value = r.contact.name; await onAppPicked(); }
   setTab("outreach");
   if (r.draft) renderDraft({ contact: r.contact, draft: r.draft });
+}
+async function openRecruiterFor(appId) {
+  oContactId = null; setOMode("recruiter"); fillAppSelect(appId); await onAppPicked();
+  $("#oResult").hidden = true; setTab("outreach");
 }
 loadResume();
 

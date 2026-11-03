@@ -225,17 +225,22 @@ def _usc_line(usc: dict, override: str | None) -> str:
 
 
 def build_prompt(resume_text: str, name: str, profile: str, usc: dict, override: str | None, goal: str, first_name: str,
-                 feedback: str = "") -> str:
+                 feedback: str = "", style: str = "", points: str = "", short: bool = False) -> str:
     limit = note_max()
     p = _PROMPT.format(resume=resume_text[:5000], goal=goal, first_name=first_name or "(sign with the name on the resume)",
                        name=name or "(unknown; infer from the details)", profile=(profile or "(nothing pasted)")[:3800],
                        usc_line=_usc_line(usc, override), note_max=limit - 5, note_min=round(limit * 0.82), note_target=round(limit * 0.93),
-                       message_min=650, message_max=MESSAGE_MAX - 400)
+                       message_min=350 if short else 650, message_max=750 if short else MESSAGE_MAX - 400)
+    p += f"\n\nSTYLE: {style}" if style else ""
+    p += f"\n\nRESUME LINES MOST RELEVANT TO THE ROLE THE SENDER IS TARGETING (verified; prefer one as the connecting detail):\n{points}" if points else ""
     return p + (f"\n\nFIX THIS FROM THE LAST ATTEMPT: {feedback}" if feedback else "")
 
 
-def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | None = None, goal: str | None = None) -> dict:
-    """Returns {recipient, usc, hooks, note, message, warnings}. Raises ValueError (no resume / no LLM)."""
+def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | None = None, goal: str | None = None,
+          tone: str = "standard", length: str = "standard", instructions: str = "", job_text: str = "") -> dict:
+    """Returns {recipient, usc, hooks, note, message, warnings}. Raises ValueError (no resume / no LLM).
+    tone / length / instructions shape the style only; job_text (a role the sender is targeting) selects the resume lines to lean on."""
+    from . import recruiter                      # imported here: recruiter.py builds on this module
     resume_text = resume.load_text()
     if not resume_text:
         raise ValueError("Upload your resume first (Outreach tab → Resume).")
@@ -244,8 +249,13 @@ def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | No
     usc = detect_usc(f"{name}\n{profile_text}")
     goal = goal or config.OUTREACH_GOAL
     feedback, out, held, limit = "", None, None, note_max()
+    tone_text, extra = recruiter._style(tone, length, instructions)
+    style = f"tone is {tone_text}. {extra}".strip() if (tone != "standard" or extra) else ""
+    pts = recruiter.relevant_points(resume_text, job_text)
+    points = "\n".join(f"- {p['quote']}  [{p['why']}]" for p in pts)
     for attempt in range(2):
-        out = llm.chat_json(build_prompt(resume_text, name, profile_text, usc, usc_override, goal, resume.first_name(), feedback),
+        out = llm.chat_json(build_prompt(resume_text, name, profile_text, usc, usc_override, goal, resume.first_name(), feedback,
+                                         style, points, length == "short"),
                             temperature=0.6, effort="low", label="drafting", max_tokens=6000)
         if not out or not out.get("note") or not out.get("message"):
             out, feedback = None, "Return the complete JSON with non-empty note and message."
@@ -286,4 +296,4 @@ def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | No
     warnings += _format_issues(issues)
     return {"recipient": out.get("recipient") or {}, "usc": {**usc, "used": status}, "hooks": out.get("hooks") or [],
             "note": _tidy(out["note"]), "message": _tidy(out["message"]), "warnings": warnings,
-            "limits": {"note_max": note_max()}}
+            "limits": {"note_max": note_max()}, "points": pts, "options": {"tone": tone, "length": length}}
