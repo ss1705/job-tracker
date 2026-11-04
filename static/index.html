@@ -439,12 +439,17 @@ async function load() {
 }
 
 function renderChips() {
-  const by = stats.by_status || {};
-  const chips = [["all", "All", stats.total || 0, "var(--muted)"],
-    ...STATUSES.filter(s => by[s]).map(s => [s, s, by[s], `var(--${s})`])];
-  if (stats.actions_open) chips.push(["action", "Action needed", stats.actions_open, "var(--warn)"]);
-  if (stats.follow_up) chips.push(["follow", "Follow up", stats.follow_up, "var(--Interview)"]);
-  if (stats.needs_review) chips.push(["review", "Needs review", stats.needs_review, "var(--warn)"]);
+  // counts follow the search box and job-type filter, so each chip shows what it would list
+  const q = $("#q").value.trim().toLowerCase(), t = $("#typeFilter").value;
+  const pool = apps.filter(a => (!t || a.job_type === t) && (!q || (a.company + " " + a.role).toLowerCase().includes(q)));
+  const by = {};
+  pool.forEach(a => { by[a.status] = (by[a.status] || 0) + 1; });
+  const actions = pool.filter(a => a.action_open).length, follow = pool.filter(a => a.follow_up_due).length, review = pool.filter(a => a.needs_review).length;
+  const chips = [["all", "All", pool.length, "var(--muted)"],
+    ...STATUSES.filter(s => by[s] || filter === s).map(s => [s, s, by[s] || 0, `var(--${s})`])];
+  if (actions || filter === "action") chips.push(["action", "Action needed", actions, "var(--warn)"]);
+  if (follow || filter === "follow") chips.push(["follow", "Follow up", follow, "var(--Interview)"]);
+  if (review || filter === "review") chips.push(["review", "Needs review", review, "var(--warn)"]);
   $("#chips").innerHTML = chips.map(([k, label, n, c]) =>
     `<button class="chip ${k === "review" || k === "action" ? "warn" : k === "follow" ? "due" : ""}" data-f="${k}" aria-pressed="${filter === k}">
        <span class="dot" style="background:${c}"></span>${esc(label)} <b>${n}</b></button>`).join("") +
@@ -528,8 +533,8 @@ $("#chips").addEventListener("click", e => {
   const b = e.target.closest("[data-f]"); if (!b) return;
   filter = b.dataset.f; renderChips(); renderRows();
 });
-$("#q").addEventListener("input", renderRows);
-$("#typeFilter").addEventListener("change", renderRows);
+$("#q").addEventListener("input", () => { renderChips(); renderRows(); });
+$("#typeFilter").addEventListener("change", () => { renderChips(); renderRows(); });
 
 $("#rows").addEventListener("click", e => {
   if (e.target.closest("select, input, textarea, button")) return;
