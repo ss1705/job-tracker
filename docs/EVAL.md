@@ -2,7 +2,7 @@
 
 > **Author's results, on the author's mailbox.** Part 1 is a *held-out* test: emails the parser was never tuned on, scored against a parser that was frozen before they were labeled. Part 2 is the earlier in-sample result the parser was tuned on, kept for comparison only. Protocol: `docs/EVAL_PROTOCOL.md`.
 
-Frozen at commit `fd15698` on 2026-10-22; held-out window starts 2026-10-11. The frozen code still matches the recorded hashes. 397 of 403 held-out labels were made blind (the parser's guess was hidden).
+Frozen at commit `2241243` on 2026-10-22 (originally `fd15698`; the commit ids changed when the history was rewritten to a no-reply author address, the file contents and hashes did not); held-out window starts 2026-10-11. The frozen code still matches the recorded hashes. 397 of 403 held-out labels were made blind (the parser's guess was hidden).
 
 ## Part 1: held-out results
 
