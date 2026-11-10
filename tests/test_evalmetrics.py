@@ -34,7 +34,7 @@ def test_extraction_counts_missed_emails_as_wrong_and_ignores_non_jobs():
     assert (e["status_given_caught"]["k"], e["status_given_caught"]["n"]) == (3, 4)
     assert (e["company"]["k"], e["company"]["n"]) == (3, 5)
     assert (e["role"]["k"], e["role"]["n"]) == (4, 5)
-    assert m.company_match("Maven Securities", "Maven") and not m.company_match("Apple", "Applebee's")
+    assert m.company_match("Northwind Securities", "Northwind") and not m.company_match("Apple", "Applebee's")
 
 
 def test_status_breakdown_confusion_and_other_label():

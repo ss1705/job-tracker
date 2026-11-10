@@ -1,7 +1,7 @@
 """Draft LinkedIn outreach from your resume and a person's profile.
 
 You supply the person's profile (paste the text, or at least their headline); the tool never fetches LinkedIn.
-It checks for a shared USC background in code (so the claim isn't left to the model), writes a short connection
+It checks for a shared school in code (SCHOOL_NAME in the settings file) (so the claim isn't left to the model), writes a short connection
 note and a longer follow-up message, and shows the evidence behind every personal detail so you can check it
 before sending. Nothing is sent from here: you copy and send on LinkedIn yourself.
 """
@@ -15,26 +15,29 @@ def note_max() -> int:
     return config.LINKEDIN_NOTE_MAX
 
 
-# ---------------------------------------------------------------- USC check (code, not the model)
+# ---------------------------------------------------------------- shared-school check (code, not the model)
 
-_USC_STRONG = re.compile(
-    r"university of southern california|usc (viterbi|marshall|annenberg|dornsife|price|keck|roski|iovine|leventhal|gould|rossier)|"
-    r"\btrojan(s)?\b|\busc\b[’']?\s*'?’?\d{2}\b|\bviterbi\b|southern california.{0,25}(alum|alumn)", re.I)
-_USC_BARE = re.compile(r"\busc\b", re.I)
-_NOT_USC = re.compile(r"university of south carolina|south carolina|usc upstate|usc aiken|usc beaufort", re.I)
+def _any(terms: list[str]) -> re.Pattern | None:
+    return re.compile("|".join(r"\b" + re.escape(t) + r"\b" for t in terms), re.I) if terms else None
 
 
-def detect_usc(text: str) -> dict:
-    """yes = clear USC (Los Angeles) signal; maybe = a bare 'USC' (could be South Carolina), so confirm; no = none."""
-    text = text or ""
-    strong = [m.group(0) for m in _USC_STRONG.finditer(text)]
-    if strong and not _NOT_USC.search(text):
+def detect_school(text: str) -> dict:
+    """yes = a clear signal for your school; maybe = a bare mention of its short name (could be another school), so confirm; no = none.
+    Configured with SCHOOL_NAME / SCHOOL_TERMS / SCHOOL_NOT; with no SCHOOL_NAME it always says no."""
+    text, name = text or "", config.SCHOOL_NAME
+    if not name:
+        return {"status": "no", "evidence": []}
+    strong_re = _any(config.SCHOOL_TERMS)
+    strong = [m.group(0) for m in strong_re.finditer(text)] if strong_re else []
+    strong += [m.group(0) for m in re.finditer(r"\b" + re.escape(name) + r"[’']?\s*'?’?\d{2}\b", text, re.I)]      # "USC '25"
+    not_re = _any(config.SCHOOL_NOT)
+    lookalike = bool(not_re and not_re.search(text))
+    if strong and not lookalike:
         return {"status": "yes", "evidence": sorted(set(s.strip() for s in strong), key=str.lower)[:4]}
-    bare = _USC_BARE.findall(text)
-    if bare and not _NOT_USC.search(text):
-        return {"status": "maybe", "evidence": ["mentions “USC” (could be another USC; confirm before using)"]}
-    if _NOT_USC.search(text):
-        return {"status": "no", "evidence": ["mentions University of South Carolina, not USC Los Angeles"]}
+    if re.search(r"\b" + re.escape(name) + r"\b", text, re.I) and not lookalike:
+        return {"status": "maybe", "evidence": [f"mentions “{name}” (could be another school; confirm before using)"]}
+    if lookalike:
+        return {"status": "no", "evidence": [f"mentions a look-alike, not {name}"]}
     return {"status": "no", "evidence": []}
 
 
@@ -70,7 +73,7 @@ Name: {name}
 Details pasted by the sender:
 {profile}
 
-USC CHECK (computed by code, authoritative): {usc_line}
+SHARED SCHOOL CHECK (computed by code, authoritative): {school_line}
 
 FACT RULES
 - Use ONLY facts present above. Never invent employers, projects, papers, mutual connections, events or shared experiences.
@@ -82,7 +85,7 @@ FACT RULES
   anything unless the resume or SENDER_GOAL says so, and do not attribute focus areas, publications or opinions to the recipient
   beyond their own text. A fact about the sender must be traceable to a specific line of the resume.
 - If the recipient details are thin, stay general and add a warning asking the sender to paste more of their profile.
-- If the USC check says yes, mention the shared USC / Trojan connection naturally in both messages. If maybe or no, do not claim it.
+- If the shared-school check says yes, mention the shared school naturally in both messages. If maybe or no, do not claim it.
 
 WHAT MAKES IT GOOD
 - SPECIFIC beats polite. Name ONE concrete detail from the recipient's own text (a named project, system, paper, talk, product,
@@ -95,15 +98,15 @@ WHAT MAKES IT GOOD
 
 "note" (connection note): between {note_min} and {note_max} characters INCLUDING spaces. Use nearly the whole allowance (aim for about
 {note_target}); a note much shorter than {note_min} wastes space that could carry the specific detail. Shape: greeting by first name;
-USC tie if confirmed; their specific detail; the sender's connecting detail; the small ask.
+shared-school tie if confirmed; their specific detail; the sender's connecting detail; the small ask.
 "message" (sent after they accept): {message_min} to {message_max} characters, 5 to 7 sentences, signed with the sender's first name.
 Shape: one sentence on who the sender is (school, program, expected graduation, focus); a specific paragraph linking a concrete
 project/experience of the sender to a concrete piece of their work, using details from BOTH sources; what the sender is looking for
 (from SENDER_GOAL, briefly); one specific question that is easy to answer; thanks.
 
 STYLE REFERENCE ONLY (fictional people; never reuse their facts or wording):
-note (about 190 chars): "Hi Priya, fellow Trojan here. Your last-mile routing work at Zeta (the cost-per-stop model) caught my eye; I built a demand-forecasting pipeline during my internship. Could I ask you two questions?"
-message opening: "Hi Priya, I'm Sam, an M.S. student at USC graduating in 2027 and focused on applied ML for logistics. ..."
+note (about 190 chars): "Hi Priya, fellow alum here. Your last-mile routing work at Zeta (the cost-per-stop model) caught my eye; I built a demand-forecasting pipeline during my internship. Could I ask you two questions?"
+message opening: "Hi Priya, I'm Sam, an M.S. student at Northfield University graduating in 2027 and focused on applied ML for logistics. ..."
 
 Return ONLY this JSON:
 {{"recipient": {{"name": "...", "role": "...", "company": "...", "education": ["..."]}},
@@ -190,7 +193,7 @@ def _tidy(text: str) -> str:
 
 
 _SHORTEN_PROMPT = """Rewrite the LinkedIn {field} below so it is AT MOST {limit} characters including spaces (it is {n} now).
-Remove filler words first. Keep the greeting, any shared-USC mention, the specific details about the recipient's work and the
+Remove filler words first. Keep the greeting, any shared-school mention, the specific details about the recipient's work and the
 sender's project, and the ask. Do not add new facts. Return ONLY JSON: {{"text": "..."}}
 
 {field}: {text}"""
@@ -205,7 +208,7 @@ def fit(text: str, field: str, limit: int) -> str | None:
         if attempt:
             prompt += f"\n\nYour last version was still {over} characters too long. Cut at least {over + 15} more characters."
         if attempt == 2:
-            prompt += " Keep ONLY: the greeting, the shared-USC mention if any, one specific detail of theirs, one of the sender's, and the ask."
+            prompt += " Keep ONLY: the greeting, the shared-school mention if any, one specific detail of theirs, one of the sender's, and the ask."
         try:
             out = llm.chat_json(prompt, temperature=0.3, effort="low", label="shorten", max_tokens=2000)
         except llm.LLMExhausted:
@@ -217,28 +220,28 @@ def fit(text: str, field: str, limit: int) -> str | None:
     return None
 
 
-def _usc_line(usc: dict, override: str | None) -> str:
-    status = override or usc["status"]
-    ev = "; ".join(usc["evidence"]) or "no USC signal found"
-    return {"yes": f"yes, the recipient attended USC ({ev})" if not override else "yes (confirmed by the sender)",
-            "maybe": f"unclear ({ev})", "no": "no, do not mention USC" if not override else "no (confirmed by the sender)"}[status]
+def _school_line(school: dict, override: str | None) -> str:
+    status = override or school["status"]
+    ev = "; ".join(school["evidence"]) or "no signal found"
+    return {"yes": f"yes, the recipient attended {config.SCHOOL_NAME} ({ev})" if not override else "yes (confirmed by the sender)",
+            "maybe": f"unclear ({ev})", "no": "no, do not mention the school" if not override else "no (confirmed by the sender)"}[status]
 
 
-def build_prompt(resume_text: str, name: str, profile: str, usc: dict, override: str | None, goal: str, first_name: str,
+def build_prompt(resume_text: str, name: str, profile: str, school: dict, override: str | None, goal: str, first_name: str,
                  feedback: str = "", style: str = "", points: str = "", short: bool = False) -> str:
     limit = note_max()
     p = _PROMPT.format(resume=resume_text[:5000], goal=goal, first_name=first_name or "(sign with the name on the resume)",
                        name=name or "(unknown; infer from the details)", profile=(profile or "(nothing pasted)")[:3800],
-                       usc_line=_usc_line(usc, override), note_max=limit - 5, note_min=round(limit * 0.82), note_target=round(limit * 0.93),
+                       school_line=_school_line(school, override), note_max=limit - 5, note_min=round(limit * 0.82), note_target=round(limit * 0.93),
                        message_min=350 if short else 650, message_max=750 if short else MESSAGE_MAX - 400)
     p += f"\n\nSTYLE: {style}" if style else ""
     p += f"\n\nRESUME LINES MOST RELEVANT TO THE ROLE THE SENDER IS TARGETING (verified; prefer one as the connecting detail):\n{points}" if points else ""
     return p + (f"\n\nFIX THIS FROM THE LAST ATTEMPT: {feedback}" if feedback else "")
 
 
-def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | None = None, goal: str | None = None,
+def draft(*, name: str, profile_text: str, url: str = "", school_override: str | None = None, goal: str | None = None,
           tone: str = "standard", length: str = "standard", instructions: str = "", job_text: str = "") -> dict:
-    """Returns {recipient, usc, hooks, note, message, warnings}. Raises ValueError (no resume / no LLM).
+    """Returns {recipient, school, hooks, note, message, warnings}. Raises ValueError (no resume / no LLM).
     tone / length / instructions shape the style only; job_text (a role the sender is targeting) selects the resume lines to lean on."""
     from . import recruiter                      # imported here: recruiter.py builds on this module
     resume_text = resume.load_text()
@@ -246,7 +249,7 @@ def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | No
         raise ValueError("Upload your resume first (Outreach tab → Resume).")
     if not llm.available():
         raise ValueError("Drafting needs GROQ_API_KEY in .env.")
-    usc = detect_usc(f"{name}\n{profile_text}")
+    school = detect_school(f"{name}\n{profile_text}")
     goal = goal or config.OUTREACH_GOAL
     feedback, out, held, limit = "", None, None, note_max()
     tone_text, extra = recruiter._style(tone, length, instructions)
@@ -254,7 +257,7 @@ def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | No
     pts = recruiter.relevant_points(resume_text, job_text)
     points = "\n".join(f"- {p['quote']}  [{p['why']}]" for p in pts)
     for attempt in range(2):
-        out = llm.chat_json(build_prompt(resume_text, name, profile_text, usc, usc_override, goal, resume.first_name(), feedback,
+        out = llm.chat_json(build_prompt(resume_text, name, profile_text, school, school_override, goal, resume.first_name(), feedback,
                                          style, points, length == "short"),
                             temperature=0.6, effort="low", label="drafting", max_tokens=6000)
         if not out or not out.get("note") or not out.get("message"):
@@ -286,14 +289,15 @@ def draft(*, name: str, profile_text: str, url: str = "", usc_override: str | No
         warnings.append(f"The connection note is {len(out['note'])} characters; LinkedIn allows {limit}. Trim it before sending.")
     if len((profile_text or "").strip()) < 120:
         warnings.append("Very little profile text was provided, so the draft can only be general. Paste more of their profile for a specific one.")
-    status = usc_override or usc["status"]
+    status = school_override or school["status"]
     final = (out["note"] + out["message"]).lower()
-    if status == "yes" and "usc" not in final and "trojan" not in final:
-        warnings.append("They look like a USC alum but the draft doesn't mention it; add a line or regenerate.")
+    mentions = [t.lower() for t in [config.SCHOOL_NAME, *config.SCHOOL_TERMS] if t]
+    if status == "yes" and not any(t in final for t in mentions):
+        warnings.append(f"They look like a {config.SCHOOL_NAME} alum but the draft doesn't mention it; add a line or regenerate.")
     if llm.last_model and llm.last_model != config.GROQ_MODEL:
         warnings.insert(0, f"Drafted with a smaller backup model ({llm.last_model}) because the main model's daily limit is used up. "
                            "Read this one more carefully, or regenerate tomorrow.")
     warnings += _format_issues(issues)
-    return {"recipient": out.get("recipient") or {}, "usc": {**usc, "used": status}, "hooks": out.get("hooks") or [],
+    return {"recipient": out.get("recipient") or {}, "school": {**school, "used": status}, "hooks": out.get("hooks") or [],
             "note": _tidy(out["note"]), "message": _tidy(out["message"]), "warnings": warnings,
             "limits": {"note_max": note_max()}, "points": pts, "options": {"tone": tone, "length": length}}

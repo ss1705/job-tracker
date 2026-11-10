@@ -39,6 +39,12 @@ DIGEST_SEND_EMPTY = os.getenv("DIGEST_SEND_EMPTY", "0") in ("1", "true", "True")
 # outreach drafting: what you're asking for, in your own words (used in every draft)
 OUTREACH_GOAL = os.getenv("OUTREACH_GOAL", "I'm looking for new grad / co-op software and ML roles and would value a short conversation or advice. "
                           "I am not asking for a referral up front.")
+# shared-school check for outreach (off when SCHOOL_NAME is empty). SCHOOL_NAME is the short form people write ("USC"); a bare
+# mention only counts as "maybe" because it can be a different school. SCHOOL_TERMS are unambiguous signals (full name, mascot);
+# SCHOOL_NOT lists look-alikes that cancel a match (for "USC": "south carolina").
+SCHOOL_NAME = os.getenv("SCHOOL_NAME", "").strip()
+SCHOOL_TERMS = [x.strip() for x in os.getenv("SCHOOL_TERMS", "").split(",") if x.strip()]
+SCHOOL_NOT = [x.strip() for x in os.getenv("SCHOOL_NOT", "").split(",") if x.strip()]
 DATA_DIR = DB_PATH.parent
 LINKEDIN_NOTE_MAX = int(os.getenv("LINKEDIN_NOTE_MAX", "200"))      # connection-note limit: 200 on free accounts, 300 on Premium
 

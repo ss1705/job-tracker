@@ -3,19 +3,40 @@
 Tracks job applications (co-op / new grad / internships) automatically from the "application received" and
 status-update emails in your Gmail. Local-first: FastAPI + SQLite + a single-page web UI.
 
+## What you need
+
+- Python 3.11+ and a Gmail account (the app only ever *reads* mail, plus an optional send permission used for the daily digest to yourself).
+- A free [Groq](https://console.groq.com/keys) API key. Rules handle the easy emails; the LLM handles the rest and powers outreach drafts.
+  Without a key the tracker still works, but accuracy is much lower and drafting is off.
+- A Google Cloud project to create your own Gmail OAuth client (about 5 minutes, free). Nothing is shared with the author or any server.
+
 ## Setup
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env            # optionally add GROQ_API_KEY (LLM fallback for hard emails)
-```
-
-Gmail access: create an OAuth client (type *Desktop app*) in Google Cloud Console, enable the Gmail API,
-save the JSON as `secrets/gmail_client.json`, then sign in once:
-
-```bash
-.venv/bin/python -m jobtracker.gmail
-```
+1. **Install**
+   ```bash
+   git clone <this repo> && cd job-tracker
+   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+   cp .env.example .env
+   ```
+2. **Groq:** put your key in `.env` as `GROQ_API_KEY=...`.
+3. **Gmail OAuth client:**
+   1. In [Google Cloud Console](https://console.cloud.google.com/) create a project and enable the **Gmail API**.
+   2. *Google Auth Platform* (or *APIs & Services → OAuth consent screen*): choose **External**, fill in the app name and your email, and add
+      yourself as a **test user**.
+   3. *Credentials → Create credentials → OAuth client ID*, type **Desktop app**. Download the JSON and save it as `secrets/gmail_client.json`.
+   4. Sign in once; a browser window opens, and you approve read access (and, optionally, "send email" for the digest):
+      ```bash
+      .venv/bin/python -m jobtracker.gmail
+      ```
+   While the consent screen is in *Testing* mode Google expires the connection after about 7 days; see the troubleshooting section below.
+4. **Optional settings** in `.env` (all have defaults): `TIMEZONE`, `AUTO_SYNC_MINUTES`, `DIGEST_HOUR`, `APP_PASSWORD` (set one before exposing the
+   app beyond your own machine), `LINKEDIN_NOTE_MAX` (200 on a free LinkedIn account, 300 on Premium), `OUTREACH_GOAL`, and the shared-school
+   check for outreach drafts:
+   ```
+   SCHOOL_NAME=USC                                         # how people abbreviate it; leave empty to turn the check off
+   SCHOOL_TERMS=University of Southern California,Trojan   # unambiguous signals
+   SCHOOL_NOT=South Carolina                               # look-alikes that cancel a match
+   ```
 
 ## Run
 
@@ -23,6 +44,9 @@ save the JSON as `secrets/gmail_client.json`, then sign in once:
 .venv/bin/uvicorn jobtracker.api:app --reload
 # open http://127.0.0.1:8000
 ```
+
+Your data stays on your machine: the SQLite database and uploaded resume live in `data/`, the Gmail credentials in `secrets/`, and both are gitignored.
+Email text is sent to Groq only when the rules can't decide, and when you ask for an outreach draft (resume text plus the profile you paste).
 
 Pick a date range in the UI and press **Sync**. Re-syncing is safe (messages are tracked by Gmail id).
 Rows the parser wasn't sure about are marked **review**. Editing a status by hand locks it against later auto-updates.
@@ -76,7 +100,7 @@ application (linking one turns on that application's follow-up reminders). Remin
 ### Drafting outreach (Outreach tab)
 
 Upload your resume once (PDF / DOCX / TXT; stored in `data/`, gitignored). Then paste someone's LinkedIn link and their
-profile text (select-all on their profile and copy; even a headline works). It checks for a shared USC background in code,
+profile text (select-all on their profile and copy; even a headline works). It checks for a shared school (the `SCHOOL_*` settings) in code,
 drafts a ≤200-character connection note and a follow-up message tying your resume to their work, shows the evidence for each
 personal detail, and runs a second fact-check pass that flags anything the sources don't support. It never reads LinkedIn and
 never sends anything: you copy the text, send it on LinkedIn, and press **I sent it**, which logs the outreach (stage, date,

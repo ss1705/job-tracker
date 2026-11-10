@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     response_logged_at TEXT,                  -- when the tracker noticed (drives the digest)
     needs_triage INTEGER NOT NULL DEFAULT 0,  -- auto-added from LinkedIn: the user hasn't sorted it yet (no reminders until kept)
     profile_text TEXT NOT NULL DEFAULT '',    -- what you pasted from their profile (kept locally, for regenerating drafts)
-    draft_json TEXT NOT NULL DEFAULT '',      -- last outreach draft (note, message, evidence, USC check)
+    draft_json TEXT NOT NULL DEFAULT '',      -- last outreach draft (note, message, evidence, shared-school check)
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

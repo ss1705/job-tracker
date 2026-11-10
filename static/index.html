@@ -270,7 +270,7 @@
       <div class="row"><h2 style="margin:0;font-size:16px">Draft a message</h2><span style="flex:1"></span>
         <button id="oModePerson" class="primary" title="A LinkedIn note and a follow-up to a person you want to meet">A person</button>
         <button id="oModeRecruiter" title="A LinkedIn note and an email to a recruiter about a role you applied for or plan to apply for">A recruiter, for an application</button></div>
-      <div id="oModeHelp" class="muted" style="font-size:13px;margin-top:4px">Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and uses USC when you share it. You review, copy and send it yourself.</div>
+      <div id="oModeHelp" class="muted" style="font-size:13px;margin-top:4px">Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and mentions a shared school when you have one. You review, copy and send it yourself.</div>
       <div id="oRecruiterFields" hidden>
         <label class="field-block">Application<select id="oApp"></select></label>
         <div id="oAppNote" class="muted" style="font-size:12px;margin-top:4px"></div>
@@ -282,7 +282,7 @@
       <label class="field-block">Their profile text <span style="opacity:.7">(open their profile, select all, copy, paste here; even just the headline helps)</span>
         <textarea id="oProfile" rows="7" placeholder="Name, headline, About, Experience, Education…"></textarea></label>
       <div class="row" style="margin-top:12px">
-        <label class="field" id="oUscField">Same school?<select id="oUsc"><option value="">Auto-detect USC</option><option value="yes">Yes, they’re a USC alum</option><option value="no">No, don’t mention USC</option></select></label>
+        <label class="field" id="oSchoolField" hidden>Same school?<select id="oSchool"><option value="">Auto-detect</option><option value="yes">Yes, same school</option><option value="no">No, don’t mention it</option></select></label>
         <label class="field">Tone<select id="oTone"><option value="standard">Standard</option><option value="warm">Warm</option><option value="direct">Direct</option><option value="formal">Formal</option></select></label>
         <label class="field">Length<select id="oLength"><option value="standard">Standard</option><option value="short">Short</option></select></label>
         <label class="field" style="flex:1;min-width:180px">Anything else? <input id="oExtra" placeholder="e.g. less formal, mention my co-op"></label>
@@ -866,11 +866,12 @@ $("#impApply").onclick = async () => {
 
 // ---------------------------------------------------------------- outreach drafting
 let oContactId = null, oDraft = null;
-let NOTE_MAX = 200;
+let NOTE_MAX = 200, SCHOOL = "";
 
 async function loadResume() {
   const r = await api("/api/resume").catch(() => null), el = $("#resumeStatus");
   if (!r) return;
+  SCHOOL = r.school || ""; $("#oSchoolField").hidden = oMode === "recruiter" || !SCHOOL;
   el.textContent = r.present ? `${r.filename || "resume"} · ${r.words} words` : "No resume yet. Upload one to enable drafting.";
   el.className = r.present ? "muted" : "err";
 }
@@ -895,11 +896,11 @@ let oMode = "person";
 function setOMode(mode) {
   oMode = mode;
   $("#oModePerson").classList.toggle("primary", mode === "person"); $("#oModeRecruiter").classList.toggle("primary", mode === "recruiter");
-  $("#oRecruiterFields").hidden = mode !== "recruiter"; $("#oUscField").hidden = mode === "recruiter";
+  $("#oRecruiterFields").hidden = mode !== "recruiter"; $("#oSchoolField").hidden = mode === "recruiter" || !SCHOOL;
   $("#oUrlLabel").textContent = mode === "recruiter" ? "Recruiter’s LinkedIn link (optional)" : "LinkedIn profile link";
   $("#oModeHelp").textContent = mode === "recruiter"
     ? "Pick an application. It writes a LinkedIn note and an email to the recruiter that say what you applied for and tie one thing you built to the role. You review, copy and send them yourself."
-    : "Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and uses USC when you share it. You review, copy and send it yourself.";
+    : "Drops in a LinkedIn profile, writes a connection note and a follow-up that tie your resume to their work, and mentions a shared school when you have one. You review, copy and send it yourself.";
   if (mode === "recruiter") fillAppSelect();
 }
 function fillAppSelect(selected) {
@@ -928,8 +929,8 @@ const subjectRow = id => `<input id="${id}" style="width:100%;margin-bottom:6px"
 
 function renderDraft(r) {
   oContactId = r.contact.id; oDraft = r.draft; NOTE_MAX = (r.draft.limits && r.draft.limits.note_max) || 200;
-  const d = r.draft, u = d.usc || { used: "no", evidence: [] }, rec = d.kind === "recruiter";
-  const label = rec ? "Recruiter" : ({ yes: "USC alum", maybe: "Maybe USC", no: "Not USC" }[u.used] || "");
+  const d = r.draft, u = d.school || { used: "no", evidence: [] }, rec = d.kind === "recruiter";
+  const label = rec ? "Recruiter" : (SCHOOL ? { yes: `${SCHOOL} alum`, maybe: `Maybe ${SCHOOL}`, no: `Not ${SCHOOL}` }[u.used] || "" : "");
   const box = $("#oResult");
   box.hidden = false;
   box.innerHTML = `
@@ -938,7 +939,7 @@ function renderDraft(r) {
       <span class="pill ${rec ? "maybe" : u.used}" title="${esc((u.evidence || []).join("; "))}">${label}</span>
       <span style="flex:1"></span>
       ${r.contact.link ? `<a href="${esc(r.contact.link)}" target="_blank" rel="noopener">Open profile ↗</a>` : ""}</div>
-    ${!rec && u.evidence && u.evidence.length ? `<div class="muted" style="font-size:12px;margin-top:4px">USC check: ${esc(u.evidence.join("; "))}</div>` : ""}
+    ${!rec && u.evidence && u.evidence.length ? `<div class="muted" style="font-size:12px;margin-top:4px">School check: ${esc(u.evidence.join("; "))}</div>` : ""}
     ${d.warnings.length ? `<ul class="hooks" style="color:var(--warn)">${d.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
     ${draftBox("Connection note", "oNote", d.note, "", `<button data-o="copy-note">Copy</button><button data-o="sent-note" title="Log this outreach in Contacts as Reached out">I sent it</button>`)}
     ${rec ? draftBox("Email", "oEmailBody", d.email.body, subjectRow("oEmailSubject"),
@@ -983,7 +984,7 @@ async function runDraft(extra = {}) {
         job_text: $("#oJob").value, contact_id: oContactId, ...oOptions(), ...extra }) });
     } else {
       r = await api("/api/outreach/draft", { method: "POST", body: JSON.stringify({
-        url: $("#oUrl").value.trim(), profile_text: $("#oProfile").value, usc_override: $("#oUsc").value || null, contact_id: oContactId, ...oOptions(), ...extra }) });
+        url: $("#oUrl").value.trim(), profile_text: $("#oProfile").value, school_override: $("#oSchool").value || null, contact_id: oContactId, ...oOptions(), ...extra }) });
     }
     renderDraft(r); msg.textContent = "";
     loadContacts(); load();

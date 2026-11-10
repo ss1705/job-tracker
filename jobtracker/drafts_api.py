@@ -7,7 +7,7 @@ from datetime import date
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import db, drafting, llm, outreach, recruiter, resume
+from . import config, db, drafting, llm, outreach, recruiter, resume
 
 router = APIRouter(prefix="/api", tags=["outreach"])
 
@@ -22,7 +22,7 @@ class DraftRequest(BaseModel):
     name: str = ""
     profile_text: str = ""
     contact_id: int | None = None
-    usc_override: str | None = None      # "yes" | "no" | None (auto-detect)
+    school_override: str | None = None   # "yes" | "no" | None (auto-detect)
     tone: str = "standard"
     length: str = "standard"
     instructions: str = ""               # free-text style request, e.g. "less formal"
@@ -53,7 +53,7 @@ class SentRequest(BaseModel):
 
 @router.get("/resume")
 def resume_status():
-    return resume.status()
+    return {**resume.status(), "school": config.SCHOOL_NAME}
 
 
 @router.post("/resume")
@@ -80,8 +80,8 @@ def _length(v: str) -> str:
 
 @router.post("/outreach/draft")
 def make_draft(body: DraftRequest):
-    if body.usc_override not in (None, "yes", "no"):
-        raise HTTPException(422, "usc_override must be yes, no or empty")
+    if body.school_override not in (None, "yes", "no"):
+        raise HTTPException(422, "school_override must be yes, no or empty")
     url, slug = drafting.clean_profile_url(body.url)
     if not (url or body.contact_id or body.name.strip()):
         raise HTTPException(422, "Paste a LinkedIn profile link (or at least a name).")
@@ -93,7 +93,7 @@ def make_draft(body: DraftRequest):
         if c and c["title"] and c["title"] not in profile:
             profile = f"{c['title']}\n{profile}".strip()       # a headline we already know (e.g. from a LinkedIn notice)
     try:
-        d = drafting.draft(name=name, profile_text=profile, url=url, usc_override=body.usc_override, tone=_tone(body.tone),
+        d = drafting.draft(name=name, profile_text=profile, url=url, school_override=body.school_override, tone=_tone(body.tone),
                            length=_length(body.length), instructions=body.instructions, job_text=body.job_text)
     except llm.LLMExhausted as e:
         raise HTTPException(429, str(e))

@@ -2,7 +2,7 @@ import importlib
 
 import pytest
 
-from jobtracker import drafting, resume
+from jobtracker import config, drafting, resume
 
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
 
@@ -39,14 +39,19 @@ def fake_llm(note=GOOD_NOTE):
     return chat_json, calls
 
 
-def test_detect_usc_and_names():
-    assert drafting.detect_usc("Education: University of Southern California")["status"] == "yes"
-    assert drafting.detect_usc("MS CS @ USC")["status"] == "maybe"
-    assert drafting.detect_usc("University of South Carolina")["status"] == "no"
-    assert drafting.detect_usc("MIT")["status"] == "no"
-    assert drafting.name_from_slug("timothy-greer-ph-d-28630671") == "Timothy Greer"
-    assert drafting.clean_profile_url("https://www.linkedin.com/in/timothy-greer-ph-d-28630671?utm_source=share_via&utm_medium=member_ios") == (
-        "https://www.linkedin.com/in/timothy-greer-ph-d-28630671", "timothy-greer-ph-d-28630671")
+def test_detect_school_and_names(monkeypatch):
+    monkeypatch.setattr(config, "SCHOOL_NAME", "USC")
+    monkeypatch.setattr(config, "SCHOOL_TERMS", ["University of Southern California", "Trojan"])
+    monkeypatch.setattr(config, "SCHOOL_NOT", ["South Carolina"])
+    assert drafting.detect_school("Education: University of Southern California")["status"] == "yes"
+    assert drafting.detect_school("MS CS @ USC")["status"] == "maybe"
+    assert drafting.detect_school("University of South Carolina")["status"] == "no"
+    assert drafting.detect_school("MIT")["status"] == "no"
+    monkeypatch.setattr(config, "SCHOOL_NAME", "")
+    assert drafting.detect_school("University of Southern California")["status"] == "no"      # feature off without a school
+    assert drafting.name_from_slug("jane-doe-ph-d-12345678") == "Jane Doe"
+    assert drafting.clean_profile_url("https://www.linkedin.com/in/jane-doe-ph-d-12345678?utm_source=share_via&utm_medium=member_ios") == (
+        "https://www.linkedin.com/in/jane-doe-ph-d-12345678", "jane-doe-ph-d-12345678")
     assert drafting._tidy("two‑tower model") == "two-tower model"
 
 

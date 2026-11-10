@@ -66,15 +66,15 @@ def test_oa_emails_from_platform_and_employer_collapse_to_one_record(env):
     from jobtracker.parser import Parsed
     # three emails about one assessment, as the parser would label them once the LLM reads the body
     emails = [
-        ("1", "Maven Assessment Invitation", "Maven Securities <no-reply@mavensecurities.com>", "2026-09-01T09:00:00"),
-        ("2", "Thanks for taking the Maven Securities test", "Maven Securities Hiring Team <support@hackerrank.com>", "2026-09-02T09:00:00"),
-        ("3", "FYI For any assessments with Maven", "no-reply@mavensecurities.com", "2026-09-02T12:00:00"),
+        ("1", "Northwind Assessment Invitation", "Northwind Securities <no-reply@northwindsecurities.com>", "2026-09-01T09:00:00"),
+        ("2", "Thanks for taking the Northwind Securities test", "Northwind Securities Hiring Team <support@hackerrank.com>", "2026-09-02T09:00:00"),
+        ("3", "FYI For any assessments with Northwind", "no-reply@northwindsecurities.com", "2026-09-02T12:00:00"),
     ]
-    names = ["Maven Securities", "Maven Securities", "Mavensecurities"]
+    names = ["Northwind Securities", "Northwind Securities", "Northwindsecurities"]
     with db.session() as c:
         for (i, subj, snd, ts), name in zip(emails, names):
             sync.apply_parsed(c, msg(i, subj, snd, "online assessment", ts), Parsed(is_job=True, company=name, status="OA"))
-    assert statuses(db) == [("Maven Securities", "", "OA")]
+    assert statuses(db) == [("Northwind Securities", "", "OA")]
 
 
 def test_late_reminders_do_not_reopen_a_rejection(env):
@@ -86,9 +86,9 @@ def test_late_reminders_do_not_reopen_a_rejection(env):
 
 def test_company_name_variants_are_the_same_company():
     from jobtracker.db import company_key, same_company
-    assert company_key("Maven Securities") == company_key("Mavensecurities")
+    assert company_key("Northwind Securities") == company_key("Northwindsecurities")
     assert company_key("Graybar Electric Company, Inc.") == company_key("graybar electric")
-    assert same_company("Maven", "Maven Securities")
+    assert same_company("Northwind", "Northwind Securities")
     assert same_company("Alpha Omega", "Alpha Omega Integration")
     assert same_company("Hyperion", "Hyperion - Global AI Consulting Services")
     assert not same_company("Apple", "Applebee's")

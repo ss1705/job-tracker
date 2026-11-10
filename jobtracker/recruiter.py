@@ -197,7 +197,7 @@ def draft_recruiter(*, application: dict, recruiter_name: str = "", profile_text
     warnings += drafting._format_issues(issues)
     return {"kind": "recruiter", "recipient": out.get("recipient") or {}, "hooks": out.get("hooks") or [], "note": note,
             "email": {"subject": subject, "body": body}, "points": points, "warnings": warnings,
-            "usc": {"status": "no", "evidence": [], "used": "no"}, "message": "", "limits": {"note_max": limit},
+            "school": {"status": "no", "evidence": [], "used": "no"}, "message": "", "limits": {"note_max": limit},
             "options": {"tone": tone, "length": length}}
 
 
